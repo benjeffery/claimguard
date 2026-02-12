@@ -11,9 +11,6 @@ CG_TASK = {
         "artifacts/defect_manifest/manifest.json",
         "artifacts/defect_solve/{map_index}_{map_key}_{map_hash}/interface.json"
     ],
-    "read_exemptions": [
-        "artifacts/defect_solve"
-    ],
     "outputs": [
         "artifacts/reduce_defects/interface.json",
         "artifacts/reduce_defects/report.json",

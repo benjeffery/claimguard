@@ -30,3 +30,16 @@ def test_cli_report_and_doctor_commands(capsys) -> None:
     assert rc == 0
     out = capsys.readouterr().out
     assert "doctor: ok" in out
+
+
+def test_cli_doctor_graphviz_outputs_dot(capsys) -> None:
+    contract = Path("examples/minimal-example/claimguard.json").resolve()
+    assert contract.exists()
+
+    rc = main(["doctor", "--contract", str(contract), "--graphviz"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out.startswith("digraph ")
+    assert '"prepare_data" -> "fit_model";' in out
+    assert '"fit_model" -> "publish_rank";' in out
+    assert '"fit_model" -> "diagnostic_probe";' in out

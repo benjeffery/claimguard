@@ -13,3 +13,5 @@ dependencies = []
 [project.scripts]
 claimguard = "claimguard.cli:main"
 
+[tool.setuptools]
+packages = ["claimguard"]

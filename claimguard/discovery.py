@@ -254,3 +254,25 @@ def topological_order(tasks: dict[str, TaskSpec], deps: dict[str, list[str]]) ->
             done.add(task)
             order.append(task)
     return order
+
+
+def graphviz_dot(
+    tasks: dict[str, TaskSpec],
+    deps: dict[str, list[str]],
+    *,
+    graph_name: str = "claimguard",
+    rankdir: str = "LR",
+) -> str:
+    def esc(token: str) -> str:
+        return str(token).replace("\\", "\\\\").replace('"', '\\"')
+
+    safe_graph_name = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in str(graph_name)).strip("_") or "claimguard"
+
+    lines = [f"digraph {safe_graph_name} {{", f"  rankdir={rankdir};", "  node [shape=box];"]
+    for name in sorted(tasks.keys()):
+        lines.append(f'  "{esc(name)}";')
+    for name in sorted(deps.keys()):
+        for dep in deps.get(name, []):
+            lines.append(f'  "{esc(dep)}" -> "{esc(name)}";')
+    lines.append("}")
+    return "\n".join(lines) + "\n"

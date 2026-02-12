@@ -138,3 +138,96 @@ def test_io_enforcement_allows_declared_read_exemption(tmp_path: Path) -> None:
     row = next(r for r in report["task_rows"] if r["task"] == "task")
     assert row["status"] == "ok"
     assert row["blocked_reason"] == ""
+
+
+def test_io_enforcement_blocks___file___workspace_read_bypass(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    _write(ws / "inputs/in.txt", "in\n")
+    _write(ws / "inputs/secret.txt", "secret\n")
+    contract_path = _single_task_contract(ws)
+
+    cg_task = {
+        "inputs": ["inputs/in.txt"],
+        "outputs": ["artifacts/interface.json"],
+        "interface_output": "artifacts/interface.json",
+        "gates": [],
+    }
+    _write_task_script(
+        ws,
+        cg_task,
+        [
+            "root = Path.cwd()",
+            "(root / 'inputs/in.txt').read_text(encoding='utf-8')",
+            "ws_root = Path(__file__).resolve().parents[1]",
+            "(ws_root / 'inputs/secret.txt').read_text(encoding='utf-8')",
+            "(root / 'artifacts').mkdir(parents=True, exist_ok=True)",
+            "(root / 'artifacts/interface.json').write_text(json.dumps({'status':'ok'}), encoding='utf-8')",
+        ],
+    )
+
+    report = PipelineRunner(contract_path).run()
+    row = next(r for r in report["task_rows"] if r["task"] == "task")
+    assert row["status"] == "blocked"
+    assert str(row["blocked_reason"]).startswith("nonzero_exit")
+
+
+def test_io_enforcement_blocks___file___workspace_write_bypass(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    _write(ws / "inputs/in.txt", "in\n")
+    contract_path = _single_task_contract(ws)
+
+    cg_task = {
+        "inputs": ["inputs/in.txt"],
+        "outputs": ["artifacts/interface.json"],
+        "interface_output": "artifacts/interface.json",
+        "gates": [],
+    }
+    _write_task_script(
+        ws,
+        cg_task,
+        [
+            "root = Path.cwd()",
+            "(root / 'inputs/in.txt').read_text(encoding='utf-8')",
+            "ws_root = Path(__file__).resolve().parents[1]",
+            "(ws_root / 'rogue_write.txt').write_text('rogue\\n', encoding='utf-8')",
+            "(root / 'artifacts').mkdir(parents=True, exist_ok=True)",
+            "(root / 'artifacts/interface.json').write_text(json.dumps({'status':'ok'}), encoding='utf-8')",
+        ],
+    )
+
+    report = PipelineRunner(contract_path).run()
+    row = next(r for r in report["task_rows"] if r["task"] == "task")
+    assert row["status"] == "blocked"
+    assert str(row["blocked_reason"]).startswith("nonzero_exit")
+
+
+def test_directory_inputs_are_forbidden(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "inputs/dir").mkdir(parents=True, exist_ok=True)
+    _write(ws / "inputs/dir/file.txt", "x\n")
+    contract_path = _single_task_contract(ws)
+
+    cg_task = {
+        "inputs": ["inputs/dir"],
+        "outputs": ["artifacts/interface.json"],
+        "interface_output": "artifacts/interface.json",
+        "gates": [],
+    }
+    _write_task_script(
+        ws,
+        cg_task,
+        [
+            "root = Path.cwd()",
+            "(root / 'inputs/dir/file.txt').read_text(encoding='utf-8')",
+            "(root / 'artifacts').mkdir(parents=True, exist_ok=True)",
+            "(root / 'artifacts/interface.json').write_text(json.dumps({'status':'ok'}), encoding='utf-8')",
+        ],
+    )
+
+    report = PipelineRunner(contract_path).run()
+    row = next(r for r in report["task_rows"] if r["task"] == "task")
+    assert row["status"] == "blocked"
+    assert row["blocked_reason"] == "directory_input"

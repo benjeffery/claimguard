@@ -1,6 +1,6 @@
 # claimguard Run Report
 
-- run_id: `run_20260212T182624Z_143c6de8`
+- run_id: `run_20260212T204428Z_5267ec17`
 - pipeline: `minimal_example`
 - claim_class: `contract-certified`
 - cache_hits: `0`

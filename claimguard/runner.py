@@ -249,11 +249,8 @@ def _copy_rel_if_exists(src_root: Path, dst_root: Path, rel: str) -> None:
     dst = (dst_root / rel).resolve()
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
-    else:
-        shutil.copy2(src, dst)
+        raise RuntimeError(f"directory artifacts are not supported: {rel!r}")
+    shutil.copy2(src, dst)
 
 
 def _get_dotted(obj: dict[str, Any], dotted: str) -> Any:
@@ -326,6 +323,12 @@ class PipelineRunner:
             raise RuntimeError("no tasks discovered under configured task_roots")
         self.deps = infer_dependencies(self.task_specs)
         self.order = topological_order(self.task_specs, self.deps)
+        self._map_output_template_to_task: dict[str, str] = {}
+        for name, spec in sorted(self.task_specs.items()):
+            if spec.map_config is None:
+                continue
+            for out_rel in spec.outputs:
+                self._map_output_template_to_task[out_rel] = name
 
         self.state_root = self.workspace_root / ".claimguard"
         self.cache_root = self.state_root / "cache"
@@ -336,6 +339,56 @@ class PipelineRunner:
         self.run_root.mkdir(parents=True, exist_ok=True)
         self._rng_policy = "off"
         self._rng_seed_base = 0
+
+    def _expand_map_inputs(self, spec: TaskSpec, *, strict: bool) -> list[str]:
+        out: list[str] = []
+        for rel in spec.inputs:
+            if "{map_index}" not in rel and "{map_key}" not in rel and "{map_hash}" not in rel:
+                out.append(rel)
+                continue
+
+            producer = self._map_output_template_to_task.get(rel)
+            if not producer:
+                if strict:
+                    raise RuntimeError(f"task `{spec.name}` input uses map tokens but no map producer found: {rel!r}")
+                out.append(rel)
+                continue
+
+            map_spec = self.task_specs[producer]
+            m = map_spec.map_config or {}
+            items_input = str(m.get("items_input", ""))
+            items_path = str(m.get("items_path", ""))
+            item_name_field = str(m.get("item_name_field", "")).strip()
+            items_file = (self.workspace_root / items_input).resolve()
+            if not items_file.exists():
+                if strict:
+                    raise RuntimeError(f"map items_input missing for map task `{producer}`: {items_input!r}")
+                out.append(rel)
+                continue
+
+            try:
+                root_obj = _read_json(items_file)
+                raw_items = _get_dotted(root_obj, items_path) if items_path else root_obj
+                if not isinstance(raw_items, list):
+                    raise RuntimeError("items_not_list")
+                items: list[Any] = list(raw_items)
+            except Exception as e:
+                if strict:
+                    raise RuntimeError(f"failed to load map items for map task `{producer}`") from e
+                out.append(rel)
+                continue
+
+            for idx, item in enumerate(items):
+                item_hash = _short_item_hash(item)
+                if item_name_field and isinstance(item, dict) and item_name_field in item:
+                    map_key_raw = str(item[item_name_field])
+                else:
+                    map_key_raw = str(idx)
+                map_key = _safe_name(map_key_raw)
+                out.append(_expand_map_token(rel, map_index=idx, map_key=map_key, map_hash=item_hash))
+
+        # stable order + de-dupe
+        return list(dict.fromkeys(out))
 
     def _rng_env_for(self, spec: TaskSpec) -> dict[str, str]:
         policy = str(self._rng_policy)
@@ -349,17 +402,28 @@ class PipelineRunner:
         }
 
     def _compute_input_hashes(self, spec: TaskSpec) -> dict[str, str]:
+        expanded_inputs = self._expand_map_inputs(spec, strict=False)
         out: dict[str, str] = {}
-        for rel in spec.inputs:
+        for rel in expanded_inputs:
             p = (self.workspace_root / rel).resolve()
-            out[rel] = _sha256(p) if p.exists() else "MISSING"
+            if not p.exists():
+                out[rel] = "MISSING"
+            elif p.is_dir():
+                out[rel] = "DIRECTORY"
+            else:
+                out[rel] = _sha256(p)
         return out
 
     def _compute_output_hashes(self, spec: TaskSpec) -> dict[str, str]:
         out: dict[str, str] = {}
         for rel in spec.outputs:
             p = (self.workspace_root / rel).resolve()
-            out[rel] = _sha256(p) if p.exists() else "MISSING"
+            if not p.exists():
+                out[rel] = "MISSING"
+            elif p.is_dir():
+                out[rel] = "DIRECTORY"
+            else:
+                out[rel] = _sha256(p)
         return out
 
     def _cache_file(self, task_name: str) -> Path:
@@ -412,7 +476,8 @@ class PipelineRunner:
     def _prepare_stage_workspace(self, spec: TaskSpec, stage_root: Path) -> None:
         stage_root.mkdir(parents=True, exist_ok=True)
         # Inputs and declared read exemptions are materialized into staging.
-        for rel in list(spec.inputs) + list(spec.read_exemptions):
+        expanded_inputs = self._expand_map_inputs(spec, strict=False)
+        for rel in list(expanded_inputs) + list(spec.read_exemptions):
             _copy_rel_if_exists(self.workspace_root, stage_root, rel)
 
     def _promote_stage_outputs(self, spec: TaskSpec, stage_root: Path, *, run_id: str) -> None:
@@ -421,6 +486,8 @@ class PipelineRunner:
             src = (stage_root / rel).resolve()
             if not src.exists():
                 raise RuntimeError(f"missing staged output for promotion: {rel}")
+            if src.is_dir():
+                raise RuntimeError(f"directory outputs are not supported: {rel!r}")
             dst = (self.workspace_root / rel).resolve()
             dst.parent.mkdir(parents=True, exist_ok=True)
             tmp = dst.with_name(f"{dst.name}.cgpromote.{run_id}.tmp")
@@ -429,10 +496,7 @@ class PipelineRunner:
                     shutil.rmtree(tmp)
                 else:
                     tmp.unlink()
-            if src.is_dir():
-                shutil.copytree(src, tmp)
-            else:
-                shutil.copy2(src, tmp)
+            shutil.copy2(src, tmp)
             staged.append((src, dst, tmp))
 
         try:
@@ -455,6 +519,45 @@ class PipelineRunner:
         t0 = time.perf_counter()
         input_hashes = self._compute_input_hashes(spec)
         output_hashes = self._compute_output_hashes(spec)
+        if any(v == "DIRECTORY" for v in input_hashes.values()):
+            return TaskRow(
+                task=spec.name,
+                status="blocked",
+                cache_hit=False,
+                cache_reason="directory_input",
+                blocked_reason="directory_input",
+                gate_rows=[],
+                runtime_seconds=float(time.perf_counter() - t0),
+                inputs_hashes=input_hashes,
+                output_hashes=output_hashes,
+            )
+        if any(v == "DIRECTORY" for v in output_hashes.values()):
+            return TaskRow(
+                task=spec.name,
+                status="blocked",
+                cache_hit=False,
+                cache_reason="directory_output",
+                blocked_reason="directory_output",
+                gate_rows=[],
+                runtime_seconds=float(time.perf_counter() - t0),
+                inputs_hashes=input_hashes,
+                output_hashes=output_hashes,
+            )
+        if any(
+            (self.workspace_root / rel).resolve().exists() and (self.workspace_root / rel).resolve().is_dir()
+            for rel in list(spec.read_exemptions) + list(spec.write_exemptions)
+        ):
+            return TaskRow(
+                task=spec.name,
+                status="blocked",
+                cache_hit=False,
+                cache_reason="directory_exemption",
+                blocked_reason="directory_exemption",
+                gate_rows=[],
+                runtime_seconds=float(time.perf_counter() - t0),
+                inputs_hashes=input_hashes,
+                output_hashes=output_hashes,
+            )
         cache_key = self._cache_key(spec, input_hashes)
         cache_hit, cache_reason = self._cache_hit_reason(spec, cache_key, output_hashes)
         if cache_hit:
@@ -483,7 +586,8 @@ class PipelineRunner:
         env["PYTHONPATH"] = package_root + (os.pathsep + py_path if py_path else "")
 
         implicit_read_paths = _local_import_closure(spec.script_path, self.workspace_root)
-        declared_read_tokens = list(spec.inputs) + list(spec.outputs) + [spec.interface_output] + list(spec.read_exemptions)
+        expanded_inputs = self._expand_map_inputs(spec, strict=False)
+        declared_read_tokens = list(expanded_inputs) + list(spec.outputs) + [spec.interface_output] + list(spec.read_exemptions)
         declared_write_tokens = list(spec.outputs) + list(spec.write_exemptions)
         read_paths = _normalize_path_tokens(declared_read_tokens, stage_root)
         read_paths.extend(implicit_read_paths)
@@ -495,7 +599,7 @@ class PipelineRunner:
 
         env.update(
             {
-                "CG_WORKSPACE_ROOT": str(stage_root.resolve()),
+                "CG_WORKSPACE_ROOT": str(self.workspace_root.resolve()),
                 "CG_TASK_NAME": spec.name,
                 "CG_TASK_PARAMS_JSON": params_json,
                 "CG_ENFORCE_IO": "1",
@@ -539,15 +643,26 @@ class PipelineRunner:
             stage_output_hashes = {}
             for rel in spec.outputs:
                 p = (stage_root / rel).resolve()
-                stage_output_hashes[rel] = _sha256(p) if p.exists() else "MISSING"
+                if not p.exists():
+                    stage_output_hashes[rel] = "MISSING"
+                elif p.is_dir():
+                    stage_output_hashes[rel] = "DIRECTORY"
+                else:
+                    stage_output_hashes[rel] = _sha256(p)
             if any(v == "MISSING" for v in stage_output_hashes.values()):
                 status = "blocked"
                 blocked_reason = "missing_output"
+            elif any(v == "DIRECTORY" for v in stage_output_hashes.values()):
+                status = "blocked"
+                blocked_reason = "directory_output"
             else:
                 iface_path = (stage_root / spec.interface_output).resolve()
                 if not iface_path.exists():
                     status = "blocked"
                     blocked_reason = "missing_interface_output"
+                elif iface_path.is_dir():
+                    status = "blocked"
+                    blocked_reason = "directory_interface_output"
                 else:
                     interface_obj = _read_json(iface_path)
                     if not isinstance(interface_obj, dict):

@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .discovery import graphviz_dot
 from .runner import PipelineRunner
 
 
@@ -183,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
 
     doctor_p = sub.add_parser("doctor", help="Validate contract/task graph and environment")
     doctor_p.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
+    doctor_p.add_argument("--graphviz", action="store_true", help="Print task DAG in Graphviz DOT format")
 
     args = parser.parse_args(argv)
     if args.command == "run":
@@ -241,6 +243,9 @@ def main(argv: list[str] | None = None) -> int:
         if not args.contract.exists():
             raise SystemExit(f"contract not found: {args.contract}")
         runner = PipelineRunner(args.contract)
+        if args.graphviz:
+            sys.stdout.write(graphviz_dot(runner.task_specs, runner.deps, graph_name=str(runner.contract.get("pipeline_name", "claimguard"))))
+            return 0
         print(f"workspace_root: {runner.workspace_root}")
         print(f"pipeline: {runner.contract.get('pipeline_name', '-')}")
         print(f"tasks_discovered: {len(runner.task_specs)}")
