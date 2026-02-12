@@ -184,7 +184,13 @@ def main(argv: list[str] | None = None) -> int:
 
     doctor_p = sub.add_parser("doctor", help="Validate contract/task graph and environment")
     doctor_p.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
-    doctor_p.add_argument("--graphviz", action="store_true", help="Print task DAG in Graphviz DOT format")
+    doctor_mode = doctor_p.add_mutually_exclusive_group()
+    doctor_mode.add_argument("--graphviz", action="store_true", help="Print task DAG in Graphviz DOT format")
+    doctor_mode.add_argument(
+        "--audit-inputs",
+        action="store_true",
+        help="List root input files (declared task inputs with no producing task)",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "run":
@@ -245,6 +251,12 @@ def main(argv: list[str] | None = None) -> int:
         runner = PipelineRunner(args.contract)
         if args.graphviz:
             sys.stdout.write(graphviz_dot(runner.task_specs, runner.deps, graph_name=str(runner.contract.get("pipeline_name", "claimguard"))))
+            return 0
+        if args.audit_inputs:
+            produced = {out for spec in runner.task_specs.values() for out in spec.outputs}
+            root_inputs = sorted({rel for spec in runner.task_specs.values() for rel in spec.inputs if rel not in produced})
+            for rel in root_inputs:
+                print(rel)
             return 0
         print(f"workspace_root: {runner.workspace_root}")
         print(f"pipeline: {runner.contract.get('pipeline_name', '-')}")

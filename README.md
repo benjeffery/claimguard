@@ -116,6 +116,12 @@ Docs:
 - `docs/LLM_GUIDE.md`: best practices, strict rules, gate patterns, troubleshooting.
 - `docs/EXAMPLES.md`: copy-paste contracts/tasks for common patterns.
 
+## CLI Overview
+
+Use either entrypoint:
+- `claimguard ...` (console script)
+- `python3 -m claimguard ...` (module entrypoint)
+
 CLI output modes:
 - default: human-friendly live status (TTY redraw, line-mode fallback for logs)
 - `--llm-output`: NDJSON event stream (`run_start` / `task_start` / `task_end` / `run_end`)
@@ -125,6 +131,7 @@ CLI commands:
 - `claimguard run --target <task>` -> execute only target task(s) and dependencies
 - `claimguard report` -> summarize latest run report
 - `claimguard doctor` -> validate contract/task graph and input availability
+- `claimguard doctor --audit-inputs` -> list root input files (inputs not produced by any task)
 
 Run artifacts:
 - `.claimguard/reports/run_report_latest.json`

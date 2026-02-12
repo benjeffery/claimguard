@@ -43,3 +43,14 @@ def test_cli_doctor_graphviz_outputs_dot(capsys) -> None:
     assert '"prepare_data" -> "fit_model";' in out
     assert '"fit_model" -> "publish_rank";' in out
     assert '"fit_model" -> "diagnostic_probe";' in out
+
+
+def test_cli_doctor_audit_inputs_lists_root_inputs(capsys) -> None:
+    contract = Path("examples/minimal-example/claimguard.json").resolve()
+    assert contract.exists()
+
+    rc = main(["doctor", "--contract", str(contract), "--audit-inputs"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    rows = [line.strip() for line in out.splitlines() if line.strip()]
+    assert rows == ["inputs/fit_config.json", "inputs/raw_measurements.csv"]
