@@ -1,0 +1,10 @@
+{
+  "cache_key": "88a6ae9cb9dcd99e617b29f744b7123da2769e9b31d565372f05bf917032c435",
+  "output_hashes": {
+    "artifacts/prepare_data/interface.json": "09c8f59779a6dd9b2692e06495a7c70d1e7bcdd934a3bcc074a13344a1679dc7",
+    "artifacts/prepare_data/payload.json": "de0e7a1bfae57c4bfcbbae7ceec13c2e64646605534e43ee3caca975d87b95ee"
+  },
+  "status": "ok",
+  "task": "prepare_data",
+  "updated_utc": "2026-02-12T18:26:24Z"
+}

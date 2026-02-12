@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "task": "prepare_data",
+  "metrics": {
+    "row_count": 8,
+    "scale": 1.0,
+    "mean": 1.12375
+  }
+}

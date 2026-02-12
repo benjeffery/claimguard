@@ -1,0 +1,5 @@
+.claimguard/
+artifacts/
+logs/
+scratch/
+**/__pycache__/

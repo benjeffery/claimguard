@@ -1,0 +1,11 @@
+{
+  "pipeline_name": "minimal_example",
+  "task_roots": [
+    "tasks"
+  ],
+  "task_params": {
+    "fit_model": {
+      "stability_bias": 0.0
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "pipeline_name": "all_features_example_claim_fail",
+  "task_roots": [
+    "tasks"
+  ],
+  "rng_policy": "strict",
+  "rng_seed": 424242,
+  "task_params": {
+    "bootstrap_model": {
+      "num_bootstrap": 64
+    },
+    "fit_model": {
+      "stability_threshold_override": 0.01
+    }
+  }
+}

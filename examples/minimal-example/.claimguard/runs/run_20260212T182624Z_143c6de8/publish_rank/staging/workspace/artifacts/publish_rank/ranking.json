@@ -1,0 +1,19 @@
+{
+  "score": 5.96647829194831,
+  "classification": {
+    "primitive_class": "core",
+    "strict_stability_class": "strict"
+  },
+  "top_k_features": [
+    {
+      "rank": 1,
+      "feature": "f1",
+      "value": 1.12375
+    },
+    {
+      "rank": 2,
+      "feature": "f2",
+      "value": 0.18834393406743952
+    }
+  ]
+}

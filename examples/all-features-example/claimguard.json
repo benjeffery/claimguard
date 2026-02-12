@@ -1,0 +1,13 @@
+{
+  "pipeline_name": "all_features_example",
+  "task_roots": [
+    "tasks"
+  ],
+  "rng_policy": "strict",
+  "rng_seed": 424242,
+  "task_params": {
+    "bootstrap_model": {
+      "num_bootstrap": 64
+    }
+  }
+}

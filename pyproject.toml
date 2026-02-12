@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claimguard"
+version = "0.1.0"
+description = "Minimal contract-first workflow runner"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+claimguard = "claimguard.cli:main"
+
