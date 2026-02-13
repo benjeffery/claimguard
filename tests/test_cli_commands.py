@@ -208,3 +208,11 @@ def test_human_renderer_recent_rows_appends_more_for_hidden_non_ok() -> None:
     assert [str(row.get("task", "")) for row in selected[:-1]] == ["g", "f", "e", "d"]
     assert selected[-1]["__kind"] == "more_non_ok"
     assert int(selected[-1]["more_count"]) == 1
+
+
+def test_human_renderer_flask_frame_has_expected_size() -> None:
+    renderer = HumanLiveRenderer()
+    renderer._render_tick = 0
+    frame = renderer._flask_frame_lines()
+    assert len(frame) == 5
+    assert all(len(line) == 10 for line in frame)

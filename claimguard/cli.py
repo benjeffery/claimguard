@@ -25,6 +25,8 @@ class HumanLiveRenderer:
         self.use_color = self._detect_color()
         self.max_tty_fps = 5.0
         self.non_ok_fraction = 0.4
+        self.flask_min_cols = 88
+        self.flask_min_lines = 18
         self.run_id = ""
         self.pipeline = ""
         self.task_count = 0
@@ -39,6 +41,9 @@ class HumanLiveRenderer:
         self.claim_certificate_json = ""
         self.claim_class = ""
         self._last_tty_render_t = 0.0
+        self._render_tick = 0
+        self._alt_screen_active = False
+        self._saw_run_end = False
 
     def emit(self, event: dict[str, Any]) -> None:
         et = str(event.get("event", ""))
@@ -116,6 +121,7 @@ class HumanLiveRenderer:
             if status in self.status_counts:
                 self.status_counts[status] += 1
         elif et == "run_end":
+            self._saw_run_end = True
             self.claim_class = str(event.get("claim_class", ""))
             self.report_json = str(event.get("report_json", ""))
             self.claim_certificate_json = str(event.get("claim_certificate_json", ""))
@@ -134,7 +140,22 @@ class HumanLiveRenderer:
                 return
         if self.is_tty:
             self._last_tty_render_t = float(time.perf_counter())
+            self._render_tick += 1
         self._render(final, et)
+
+    def close(self) -> None:
+        if not self.is_tty:
+            return
+        if self._alt_screen_active:
+            sys.stdout.write("\x1b[?25h\x1b[?1049l")
+            sys.stdout.flush()
+            self._alt_screen_active = False
+        if self._saw_run_end:
+            print(f"claim_class: {self.claim_class}")
+            if self.report_json:
+                print(f"report_json: {self.report_json}")
+            if self.claim_certificate_json:
+                print(f"claim_certificate_json: {self.claim_certificate_json}")
 
     def _detect_color(self) -> bool:
         if not self.is_tty:
@@ -258,22 +279,69 @@ class HumanLiveRenderer:
             )
         return selected
 
+    def _flask_frame_lines(self) -> list[str]:
+        frames = [
+            [
+                "   │  │   ",
+                "  /    \\  ",
+                " /      \\ ",
+                "/~~~~~~~~\\",
+                "└────────┘",
+            ],
+            [
+                "   │  │   ",
+                "  /    \\  ",
+                " /   o  \\ ",
+                "/~~~~~~~~\\",
+                "└────────┘",
+            ],
+            [
+                "   │  │   ",
+                "  /  o \\  ",
+                " /      \\ ",
+                "/~~~~~~~~\\",
+                "└────────┘",
+            ],
+            [
+                "   │ o│   ",
+                "  /    \\  ",
+                " /      \\ ",
+                "/~~~~~~~~\\",
+                "└────────┘",
+            ],
+        ]
+        idx = (self._render_tick // 2) % len(frames)
+        return frames[idx]
+
     def _render(self, final: bool, event_type: str) -> None:
         elapsed = time.perf_counter() - self.run_t0
         if self.is_tty:
+            if not self._alt_screen_active:
+                sys.stdout.write("\x1b[?1049h\x1b[?25l")
+                sys.stdout.flush()
+                self._alt_screen_active = True
             term = shutil.get_terminal_size(fallback=(120, 40))
-            width = max(int(term.columns), 70)
+            width = max(int(term.columns) - 1, 1)
             height = max(int(term.lines), 16)
+            show_flask = width >= int(self.flask_min_cols) and height >= int(self.flask_min_lines)
             total_mem_bytes, avail_mem_bytes = self._system_mem_bytes()
             headroom_ratio = (float(avail_mem_bytes) / float(total_mem_bytes)) if total_mem_bytes > 0 else 0.0
 
             progress_suffix = f" {self.task_done}/{self.task_count} elapsed={elapsed:.1f}s"
-            bar_width = max(12, min(64, width - len("progress: ") - len(progress_suffix)))
+            bar_width = max(8, min(64, width - len("progress: ") - len(progress_suffix)))
             progress_line = f"progress: {self._progress_bar(width=bar_width)}{progress_suffix}"
+            counts_line = (
+                "counts: "
+                f"ok={self.status_counts['ok']} "
+                f"replay={self.status_counts['replay_ok']} "
+                f"diag={self.status_counts['diagnostic_only']} "
+                f"blocked={self.status_counts['blocked']}"
+            )
 
             current_header = "current tasks:"
             recent_header = f"recent tasks (non-ok reserve={int(self.non_ok_fraction * 100)}%):"
-            fixed_lines = 12
+            header_lines_count = 5 if show_flask else 4
+            fixed_lines = header_lines_count + 8
             if final:
                 fixed_lines += 4
             data_budget = max(height - fixed_lines, 2)
@@ -288,39 +356,51 @@ class HumanLiveRenderer:
             if current_rows_budget + recent_rows_budget > data_budget:
                 current_rows_budget = max(data_budget - recent_rows_budget, 1)
 
-            runtime_w = 10
-            mem_w = 10
-            map_w = max(14, min(28, width // 4))
+            runtime_w = 8
+            mem_w = 8
+            map_w = max(6, min(24, width // 4))
             task_w = width - runtime_w - mem_w - map_w - 3
-            if task_w < 12:
-                shrink = 12 - task_w
-                map_w = max(10, map_w - shrink)
+            if task_w < 6:
+                deficit = 6 - task_w
+                shrink = min(deficit, map_w - 6)
+                map_w -= shrink
+                deficit -= shrink
+                shrink = min(deficit, mem_w - 6)
+                mem_w -= shrink
+                deficit -= shrink
+                shrink = min(deficit, runtime_w - 6)
+                runtime_w -= shrink
                 task_w = width - runtime_w - mem_w - map_w - 3
+            task_w = max(task_w, 1)
 
-            recent_status_w = 8
-            recent_runtime_w = 9
-            recent_note_w = max(14, min(32, width // 3))
+            recent_status_w = 7
+            recent_runtime_w = 8
+            recent_note_w = max(6, min(28, width // 3))
             recent_task_w = width - recent_status_w - recent_runtime_w - recent_note_w - 3
-            if recent_task_w < 12:
-                shrink = 12 - recent_task_w
-                recent_note_w = max(10, recent_note_w - shrink)
+            if recent_task_w < 6:
+                deficit = 6 - recent_task_w
+                shrink = min(deficit, recent_note_w - 6)
+                recent_note_w -= shrink
+                deficit -= shrink
+                shrink = min(deficit, recent_status_w - 5)
+                recent_status_w -= shrink
+                deficit -= shrink
+                shrink = min(deficit, recent_runtime_w - 6)
+                recent_runtime_w -= shrink
                 recent_task_w = width - recent_status_w - recent_runtime_w - recent_note_w - 3
+            recent_task_w = max(recent_task_w, 1)
 
             now = float(time.perf_counter())
             total_active_rss_bytes = sum(int(slot.get("rss_bytes", 0)) for slot in self.active_tasks.values())
             total_active_mem_mib = float(total_active_rss_bytes / (1024 * 1024))
             if total_mem_bytes <= 0:
                 mem_code = ""
-            elif headroom_ratio >= 0.50:
-                mem_code = "32"
-            elif headroom_ratio >= 0.25:
+            elif headroom_ratio < 0.05:
+                mem_code = "31"
+            elif headroom_ratio < 0.10:
                 mem_code = "33"
             else:
-                mem_code = "31"
-            if total_mem_bytes > 0:
-                headroom_note = f"headroom={headroom_ratio * 100:.0f}%"
-            else:
-                headroom_note = "headroom=n/a"
+                mem_code = "32"
 
             current_lines: list[str] = []
             row_slots_for_active = max(current_rows_budget - 1, 0)
@@ -369,7 +449,7 @@ class HumanLiveRenderer:
                 " "
                 f"{mem_total_text}"
                 " "
-                f"{self._fit(headroom_note, map_w):>{map_w}}"
+                f"{'':>{map_w}}"
             )
             current_lines.append(total_line)
             if len(current_lines) > current_rows_budget:
@@ -414,16 +494,27 @@ class HumanLiveRenderer:
                 )
 
             sys.stdout.write("\x1b[2J\x1b[H")
-            sys.stdout.write("claimguard live status\n")
-            sys.stdout.write(f"pipeline: {self.pipeline or '-'}  run_id: {self.run_id or '-'}\n")
-            sys.stdout.write(f"{self._fit(progress_line, width)}\n")
-            sys.stdout.write(
-                "counts: "
-                f"ok={self.status_counts['ok']} "
-                f"replay={self.status_counts['replay_ok']} "
-                f"diag={self.status_counts['diagnostic_only']} "
-                f"blocked={self.status_counts['blocked']}\n"
-            )
+            if show_flask:
+                flask_lines = self._flask_frame_lines()
+                left_w = len(flask_lines[0]) if flask_lines else 10
+                gap = 2
+                right_w = max(width - left_w - gap, 0)
+                right_lines = [
+                    "claimguard live status",
+                    f"pipeline: {self.pipeline or '-'}  run_id: {self.run_id or '-'}",
+                    progress_line,
+                    counts_line,
+                ]
+                block_h = max(len(flask_lines), len(right_lines))
+                for i in range(block_h):
+                    left = flask_lines[i] if i < len(flask_lines) else (" " * left_w)
+                    right = self._fit(right_lines[i], right_w) if i < len(right_lines) else ""
+                    sys.stdout.write(f"{left}{' ' * gap}{right}\n")
+            else:
+                sys.stdout.write("claimguard live status\n")
+                sys.stdout.write(f"pipeline: {self.pipeline or '-'}  run_id: {self.run_id or '-'}\n")
+                sys.stdout.write(f"{self._fit(progress_line, width)}\n")
+                sys.stdout.write(f"{counts_line}\n")
             sys.stdout.write(f"\n{self._fit(current_header, width)}\n")
             sys.stdout.write(
                 f"{self._fit('task', task_w):<{task_w}}"
@@ -656,7 +747,10 @@ def main(argv: list[str] | None = None) -> int:
                 runner.run(event_emitter=llm.emit, max_workers=args.jobs, targets=list(args.target))
             else:
                 human = HumanLiveRenderer()
-                runner.run(event_emitter=human.emit, max_workers=args.jobs, targets=list(args.target))
+                try:
+                    runner.run(event_emitter=human.emit, max_workers=args.jobs, targets=list(args.target))
+                finally:
+                    human.close()
         except KeyboardInterrupt:
             return 130
         return 0
