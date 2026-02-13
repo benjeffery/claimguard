@@ -124,14 +124,16 @@ Use either entrypoint:
 
 CLI output modes:
 - default: human-friendly live status (TTY redraw, line-mode fallback for logs)
-- `--llm-output`: NDJSON event stream (`run_start` / `task_start` / `task_end` / `run_end`)
+- `--llm-output`: NDJSON event stream (`run_start` / periodic `task_summary` / `run_end`)
+  - `task_summary` fields: `current_task`, `task_started`, `task_done`, `task_left`, `task_running`
+  - when a map task is active, `task_summary` also includes `map_progress` with shard counts
 
 CLI commands:
 - `claimguard run [--jobs N]` -> execute pipeline
 - `claimguard run --target <task>` -> execute only target task(s) and dependencies
 - `claimguard report` -> summarize latest run report
 - `claimguard doctor` -> validate contract/task graph and input availability
-- `claimguard doctor --audit-inputs` -> list root input files (inputs not produced by any task)
+- `claimguard doctor --audit-inputs` -> list root input files by task (`task<TAB>input`)
 
 Run artifacts:
 - `.claimguard/reports/run_report_latest.json`

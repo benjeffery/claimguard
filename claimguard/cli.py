@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -20,18 +22,23 @@ DEFAULT_CONTRACT = Path("claimguard.json")
 class HumanLiveRenderer:
     def __init__(self) -> None:
         self.is_tty = sys.stdout.isatty()
+        self.use_color = self._detect_color()
+        self.max_tty_fps = 5.0
+        self.non_ok_fraction = 0.4
         self.run_id = ""
         self.pipeline = ""
         self.task_count = 0
         self.task_done = 0
         self.current_task = ""
         self.current_index = 0
+        self.active_tasks: dict[str, dict[str, Any]] = {}
         self.status_counts = {"ok": 0, "replay_ok": 0, "diagnostic_only": 0, "blocked": 0}
         self.rows: list[dict[str, Any]] = []
         self.run_t0 = time.perf_counter()
         self.report_json = ""
         self.claim_certificate_json = ""
         self.claim_class = ""
+        self._last_tty_render_t = 0.0
 
     def emit(self, event: dict[str, Any]) -> None:
         et = str(event.get("event", ""))
@@ -40,9 +47,54 @@ class HumanLiveRenderer:
             self.pipeline = str(event.get("pipeline", ""))
             self.task_count = int(event.get("task_count", 0))
             self.run_t0 = time.perf_counter()
+            self.active_tasks = {}
         elif et == "task_start":
             self.current_task = str(event.get("task", ""))
             self.current_index = int(event.get("index", 0))
+            self.active_tasks[self.current_task] = {
+                "index": self.current_index,
+                "started_t": float(time.perf_counter()),
+                "runtime_s": 0.0,
+                "rss_bytes": 0,
+                "shard_total": 0,
+                "shard_done": 0,
+                "shard_running": 0,
+            }
+        elif et == "task_stats":
+            tasks = event.get("tasks", {})
+            if isinstance(tasks, dict):
+                for task_name, slot in tasks.items():
+                    if not isinstance(slot, dict):
+                        continue
+                    if task_name not in self.active_tasks:
+                        self.active_tasks[task_name] = {
+                            "index": 0,
+                            "started_t": float(time.perf_counter()),
+                            "runtime_s": 0.0,
+                            "rss_bytes": 0,
+                            "shard_total": 0,
+                            "shard_done": 0,
+                            "shard_running": 0,
+                        }
+                    entry = self.active_tasks[task_name]
+                    entry["runtime_s"] = float(slot.get("runtime_s", entry.get("runtime_s", 0.0)))
+                    entry["rss_bytes"] = int(slot.get("rss_bytes", entry.get("rss_bytes", 0)))
+        elif et == "map_progress":
+            task_name = str(event.get("task", ""))
+            if task_name not in self.active_tasks:
+                self.active_tasks[task_name] = {
+                    "index": 0,
+                    "started_t": float(time.perf_counter()),
+                    "runtime_s": 0.0,
+                    "rss_bytes": 0,
+                    "shard_total": 0,
+                    "shard_done": 0,
+                    "shard_running": 0,
+                }
+            entry = self.active_tasks[task_name]
+            entry["shard_total"] = int(event.get("shard_total", 0))
+            entry["shard_done"] = int(event.get("shard_done", 0))
+            entry["shard_running"] = int(event.get("shard_running", 0))
         elif et == "task_end":
             status = str(event.get("status", ""))
             self.rows.append(
@@ -56,8 +108,11 @@ class HumanLiveRenderer:
                 }
             )
             self.task_done += 1
-            self.current_task = ""
-            self.current_index = 0
+            done_task = str(event.get("task", ""))
+            self.active_tasks.pop(done_task, None)
+            if done_task == self.current_task:
+                self.current_task = ""
+                self.current_index = 0
             if status in self.status_counts:
                 self.status_counts[status] += 1
         elif et == "run_end":
@@ -71,7 +126,25 @@ class HumanLiveRenderer:
                     for k in self.status_counts:
                         if k in counts:
                             self.status_counts[k] = int(counts[k])
-        self._render(et == "run_end")
+        final = et == "run_end"
+        if self.is_tty and not final and et in {"task_stats", "map_progress"}:
+            now = float(time.perf_counter())
+            min_interval = 1.0 / max(self.max_tty_fps, 1.0)
+            if (now - self._last_tty_render_t) < min_interval:
+                return
+        if self.is_tty:
+            self._last_tty_render_t = float(time.perf_counter())
+        self._render(final, et)
+
+    def _detect_color(self) -> bool:
+        if not self.is_tty:
+            return False
+        if os.environ.get("NO_COLOR") is not None:
+            return False
+        term = str(os.environ.get("TERM", "")).strip().lower()
+        if not term or term == "dumb":
+            return False
+        return True
 
     def _status_label(self, row: dict[str, Any]) -> str:
         status = str(row["status"])
@@ -92,17 +165,258 @@ class HumanLiveRenderer:
         fill = int(round(frac * width))
         return "[" + ("#" * fill) + ("." * (width - fill)) + "]"
 
-    def _render(self, final: bool) -> None:
+    def _fit(self, text: object, width: int) -> str:
+        w = max(int(width), 0)
+        if w <= 0:
+            return ""
+        s = str(text)
+        if len(s) <= w:
+            return s
+        if w == 1:
+            return s[:1]
+        return s[: w - 1] + "…"
+
+    def _colorize(self, text: str, code: str) -> str:
+        if not self.use_color:
+            return text
+        return f"\x1b[{code}m{text}\x1b[0m"
+
+    def _status_color_code(self, status: str) -> str:
+        if status == "ok":
+            return "32"
+        if status == "replay_ok":
+            return "36"
+        if status == "diagnostic_only":
+            return "33"
+        if status == "blocked":
+            return "31"
+        return "37"
+
+    def _system_mem_bytes(self) -> tuple[int, int]:
+        total = 0
+        available = 0
+        try:
+            meminfo = Path("/proc/meminfo")
+            if meminfo.exists():
+                for line in meminfo.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("MemTotal:"):
+                        total = int(line.split()[1]) * 1024
+                    elif line.startswith("MemAvailable:"):
+                        available = int(line.split()[1]) * 1024
+                if total > 0:
+                    if available <= 0:
+                        available = total
+                    return total, min(max(available, 0), total)
+        except Exception:
+            pass
+        try:
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+            total_pages = int(os.sysconf("SC_PHYS_PAGES"))
+            total = page_size * total_pages
+            if total > 0:
+                return total, total
+        except Exception:
+            pass
+        return 0, 0
+
+    def _select_recent_rows(self, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        recent_desc = list(reversed(self.rows))
+        non_ok_candidates = [row for row in recent_desc if str(row.get("status", "")) != "ok"]
+        reserve = int(limit * self.non_ok_fraction)
+        if non_ok_candidates and reserve <= 0:
+            reserve = 1
+        reserve = max(0, min(limit, reserve))
+        non_ok = non_ok_candidates[:reserve]
+        used = {id(row) for row in non_ok}
+        latest_budget = max(limit - len(non_ok), 0)
+        latest: list[dict[str, Any]] = []
+        for row in recent_desc:
+            if id(row) in used:
+                continue
+            latest.append(row)
+            if len(latest) >= latest_budget:
+                break
+        selected = non_ok + latest
+        selected_ids = {id(row) for row in selected}
+        hidden_non_ok_count = sum(
+            1
+            for row in non_ok_candidates
+            if id(row) not in selected_ids
+        )
+        if hidden_non_ok_count > 0:
+            if len(selected) >= limit:
+                removed = selected.pop()
+                if str(removed.get("status", "")) != "ok":
+                    hidden_non_ok_count += 1
+            selected.append(
+                {
+                    "__kind": "more_non_ok",
+                    "more_count": int(hidden_non_ok_count),
+                }
+            )
+        return selected
+
+    def _render(self, final: bool, event_type: str) -> None:
         elapsed = time.perf_counter() - self.run_t0
         if self.is_tty:
+            term = shutil.get_terminal_size(fallback=(120, 40))
+            width = max(int(term.columns), 70)
+            height = max(int(term.lines), 16)
+            total_mem_bytes, avail_mem_bytes = self._system_mem_bytes()
+            headroom_ratio = (float(avail_mem_bytes) / float(total_mem_bytes)) if total_mem_bytes > 0 else 0.0
+
+            progress_suffix = f" {self.task_done}/{self.task_count} elapsed={elapsed:.1f}s"
+            bar_width = max(12, min(64, width - len("progress: ") - len(progress_suffix)))
+            progress_line = f"progress: {self._progress_bar(width=bar_width)}{progress_suffix}"
+
+            current_header = "current tasks:"
+            recent_header = f"recent tasks (non-ok reserve={int(self.non_ok_fraction * 100)}%):"
+            fixed_lines = 12
+            if final:
+                fixed_lines += 4
+            data_budget = max(height - fixed_lines, 2)
+
+            active_rows = sorted(
+                self.active_tasks.items(),
+                key=lambda kv: (int(kv[1].get("index", 0)), str(kv[0])),
+            )
+            current_needed = max(1, len(active_rows)) + 1
+            current_rows_budget = min(current_needed, max(1, data_budget // 2))
+            recent_rows_budget = max(data_budget - current_rows_budget, 1)
+            if current_rows_budget + recent_rows_budget > data_budget:
+                current_rows_budget = max(data_budget - recent_rows_budget, 1)
+
+            runtime_w = 10
+            mem_w = 10
+            map_w = max(14, min(28, width // 4))
+            task_w = width - runtime_w - mem_w - map_w - 3
+            if task_w < 12:
+                shrink = 12 - task_w
+                map_w = max(10, map_w - shrink)
+                task_w = width - runtime_w - mem_w - map_w - 3
+
+            recent_status_w = 8
+            recent_runtime_w = 9
+            recent_note_w = max(14, min(32, width // 3))
+            recent_task_w = width - recent_status_w - recent_runtime_w - recent_note_w - 3
+            if recent_task_w < 12:
+                shrink = 12 - recent_task_w
+                recent_note_w = max(10, recent_note_w - shrink)
+                recent_task_w = width - recent_status_w - recent_runtime_w - recent_note_w - 3
+
+            now = float(time.perf_counter())
+            total_active_rss_bytes = sum(int(slot.get("rss_bytes", 0)) for slot in self.active_tasks.values())
+            total_active_mem_mib = float(total_active_rss_bytes / (1024 * 1024))
+            if total_mem_bytes <= 0:
+                mem_code = ""
+            elif headroom_ratio >= 0.50:
+                mem_code = "32"
+            elif headroom_ratio >= 0.25:
+                mem_code = "33"
+            else:
+                mem_code = "31"
+            if total_mem_bytes > 0:
+                headroom_note = f"headroom={headroom_ratio * 100:.0f}%"
+            else:
+                headroom_note = "headroom=n/a"
+
+            current_lines: list[str] = []
+            row_slots_for_active = max(current_rows_budget - 1, 0)
+            shown_active = active_rows[:row_slots_for_active]
+            if shown_active:
+                for task_name, slot in shown_active:
+                    runtime_s = float(slot.get("runtime_s", 0.0))
+                    if runtime_s <= 0.0:
+                        runtime_s = max(now - float(slot.get("started_t", now)), 0.0)
+                    mem_mib = float(int(slot.get("rss_bytes", 0)) / (1024 * 1024))
+                    shard_total = int(slot.get("shard_total", 0))
+                    if shard_total > 0:
+                        shard_done = int(slot.get("shard_done", 0))
+                        shard_running = int(slot.get("shard_running", 0))
+                        pct = int((100.0 * shard_done / shard_total)) if shard_total > 0 else 0
+                        map_note = f"{shard_done}/{shard_total} run={shard_running} {pct}%"
+                        map_note = self._colorize(self._fit(map_note, map_w), "36")
+                    else:
+                        map_note = self._fit("-", map_w)
+                    current_lines.append(
+                        f"{self._fit(task_name, task_w):<{task_w}}"
+                        " "
+                        f"{runtime_s:>{runtime_w}.1f}"
+                        " "
+                        f"{mem_mib:>{mem_w}.1f}"
+                        " "
+                        f"{map_note:>{map_w}}"
+                    )
+            elif current_rows_budget > 1:
+                current_lines.append(
+                    f"{self._fit('-', task_w):<{task_w}}"
+                    " "
+                    f"{'-':>{runtime_w}}"
+                    " "
+                    f"{'-':>{mem_w}}"
+                    " "
+                    f"{'-':>{map_w}}"
+                )
+
+            mem_total_plain = f"{total_active_mem_mib:>{mem_w}.1f}"
+            mem_total_text = self._colorize(mem_total_plain, mem_code) if mem_code else mem_total_plain
+            total_line = (
+                f"{self._fit('TOTAL', task_w):<{task_w}}"
+                " "
+                f"{'-':>{runtime_w}}"
+                " "
+                f"{mem_total_text}"
+                " "
+                f"{self._fit(headroom_note, map_w):>{map_w}}"
+            )
+            current_lines.append(total_line)
+            if len(current_lines) > current_rows_budget:
+                current_lines = current_lines[-current_rows_budget:]
+
+            recent_lines: list[str] = []
+            for row in self._select_recent_rows(recent_rows_budget):
+                if str(row.get("__kind", "")) == "more_non_ok":
+                    more = max(int(row.get("more_count", 0)), 1)
+                    recent_lines.append(
+                        f"{self._fit(f'+{more} more', recent_task_w):<{recent_task_w}}"
+                        " "
+                        f"{self._fit('-', recent_status_w):<{recent_status_w}}"
+                        " "
+                        f"{'-':>{recent_runtime_w}}"
+                        " "
+                        f"{self._fit('non-ok hidden', recent_note_w):>{recent_note_w}}"
+                    )
+                    continue
+                note = str(row["cache_reason"]) if row["cache_reason"] else str(row["blocked_reason"])
+                status = str(row.get("status", ""))
+                status_plain = f"{self._status_label(row):<{recent_status_w}}"
+                status_text = self._colorize(status_plain, self._status_color_code(status))
+                recent_lines.append(
+                    f"{self._fit(row['task'], recent_task_w):<{recent_task_w}}"
+                    " "
+                    f"{status_text}"
+                    " "
+                    f"{float(row['runtime_s']):>{recent_runtime_w}.3f}"
+                    " "
+                    f"{self._fit(note, recent_note_w):>{recent_note_w}}"
+                )
+            if not recent_lines:
+                recent_lines.append(
+                    f"{self._fit('-', recent_task_w):<{recent_task_w}}"
+                    " "
+                    f"{self._fit('-', recent_status_w):<{recent_status_w}}"
+                    " "
+                    f"{'-':>{recent_runtime_w}}"
+                    " "
+                    f"{self._fit('-', recent_note_w):>{recent_note_w}}"
+                )
+
             sys.stdout.write("\x1b[2J\x1b[H")
             sys.stdout.write("claimguard live status\n")
-            sys.stdout.write(f"pipeline: {self.pipeline or '-'}\n")
-            sys.stdout.write(f"run_id: {self.run_id or '-'}\n")
-            sys.stdout.write(
-                f"progress: {self._progress_bar()} {self.task_done}/{self.task_count} "
-                f"elapsed={elapsed:.1f}s\n"
-            )
+            sys.stdout.write(f"pipeline: {self.pipeline or '-'}  run_id: {self.run_id or '-'}\n")
+            sys.stdout.write(f"{self._fit(progress_line, width)}\n")
             sys.stdout.write(
                 "counts: "
                 f"ok={self.status_counts['ok']} "
@@ -110,19 +424,32 @@ class HumanLiveRenderer:
                 f"diag={self.status_counts['diagnostic_only']} "
                 f"blocked={self.status_counts['blocked']}\n"
             )
-            if self.current_task:
-                sys.stdout.write(f"running: [{self.current_index}/{self.task_count}] {self.current_task}\n")
-            else:
-                sys.stdout.write("running: -\n")
-            sys.stdout.write("\nrecent tasks:\n")
-            sys.stdout.write("task                          status    runtime(s)  note\n")
-            sys.stdout.write("---------------------------------------------------------------\n")
-            for row in self.rows[-10:]:
-                note = str(row["cache_reason"]) if row["cache_reason"] else row["blocked_reason"]
-                sys.stdout.write(
-                    f"{str(row['task'])[:28]:<28}  {self._status_label(row):<8}  "
-                    f"{float(row['runtime_s']):>9.3f}  {str(note)[:18]}\n"
-                )
+            sys.stdout.write(f"\n{self._fit(current_header, width)}\n")
+            sys.stdout.write(
+                f"{self._fit('task', task_w):<{task_w}}"
+                " "
+                f"{'runtime(s)':>{runtime_w}}"
+                " "
+                f"{'mem(MiB)':>{mem_w}}"
+                " "
+                f"{self._fit('map', map_w):>{map_w}}\n"
+            )
+            sys.stdout.write(f"{'-' * width}\n")
+            for line in current_lines:
+                sys.stdout.write(f"{line}\n")
+            sys.stdout.write(f"\n{self._fit(recent_header, width)}\n")
+            sys.stdout.write(
+                f"{self._fit('task', recent_task_w):<{recent_task_w}}"
+                " "
+                f"{self._fit('status', recent_status_w):<{recent_status_w}}"
+                " "
+                f"{'runtime(s)':>{recent_runtime_w}}"
+                " "
+                f"{self._fit('note', recent_note_w):>{recent_note_w}}\n"
+            )
+            sys.stdout.write(f"{'-' * width}\n")
+            for line in recent_lines:
+                sys.stdout.write(f"{line}\n")
             if final:
                 sys.stdout.write("\n")
                 sys.stdout.write(f"claim_class: {self.claim_class}\n")
@@ -133,7 +460,6 @@ class HumanLiveRenderer:
             sys.stdout.flush()
             return
 
-        # Non-TTY fallback: line-oriented progress suitable for logs.
         if final:
             print(
                 f"[run_end] claim_class={self.claim_class} "
@@ -142,13 +468,13 @@ class HumanLiveRenderer:
                 flush=True,
             )
             return
-        if self.current_task:
+        if event_type == "task_start":
             print(
                 f"[task_start] {self.current_index}/{self.task_count} {self.current_task}",
                 flush=True,
             )
             return
-        if self.rows:
+        if event_type == "task_end" and self.rows:
             row = self.rows[-1]
             if row["cache_reason"]:
                 note = f" {row['cache_reason']}"
@@ -162,6 +488,122 @@ class HumanLiveRenderer:
             )
 
 
+class LLMStreamRenderer:
+    def __init__(self, *, interval_s: float = 60.0) -> None:
+        self.interval_s = max(1.0, float(interval_s))
+        self.run_id = ""
+        self.task_count = 0
+        self.task_started = 0
+        self.task_done = 0
+        self._active_tasks: list[str] = []
+        self._map_progress_by_task: dict[str, dict[str, int]] = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._ticker: threading.Thread | None = None
+
+    def _summary_event(self) -> dict[str, object]:
+        current_task = self._active_tasks[0] if self._active_tasks else ""
+        done = int(self.task_done)
+        started = int(self.task_started)
+        running = int(len(self._active_tasks))
+        total = int(self.task_count)
+        left = max(total - done, 0)
+        out: dict[str, object] = {
+            "event": "task_summary",
+            "run_id": self.run_id,
+            "current_task": current_task,
+            "task_started": started,
+            "task_done": done,
+            "task_left": left,
+            "task_running": running,
+        }
+        in_progress_map_tasks = [
+            task
+            for task, progress in self._map_progress_by_task.items()
+            if int(progress.get("shard_done", 0)) < int(progress.get("shard_total", 0))
+        ]
+        if in_progress_map_tasks:
+            map_task = current_task if current_task in in_progress_map_tasks else in_progress_map_tasks[0]
+            progress = self._map_progress_by_task.get(map_task, {})
+            shard_total = int(progress.get("shard_total", 0))
+            shard_done = int(progress.get("shard_done", 0))
+            out["map_progress"] = {
+                "task": map_task,
+                "shard_total": shard_total,
+                "shard_done": shard_done,
+                "shard_left": max(shard_total - shard_done, 0),
+                "shard_running": int(progress.get("shard_running", 0)),
+            }
+        return out
+
+    def _tick(self) -> None:
+        while not self._stop.wait(self.interval_s):
+            with self._lock:
+                if not self.run_id:
+                    continue
+                payload = self._summary_event()
+            print(json.dumps(payload, sort_keys=True), flush=True)
+
+    def _start_ticker(self) -> None:
+        if self._ticker is not None:
+            return
+        self._stop.clear()
+        self._ticker = threading.Thread(target=self._tick, name="claimguard-llm-ticker", daemon=True)
+        self._ticker.start()
+
+    def _stop_ticker(self) -> None:
+        self._stop.set()
+        if self._ticker is not None:
+            self._ticker.join(timeout=max(self.interval_s, 1.0) + 1.0)
+            self._ticker = None
+
+    def emit(self, event: dict[str, object]) -> None:
+        et = str(event.get("event", ""))
+        if et == "run_start":
+            with self._lock:
+                self.run_id = str(event.get("run_id", ""))
+                self.task_count = int(event.get("task_count", 0))
+                self.task_started = 0
+                self.task_done = 0
+                self._active_tasks = []
+                self._map_progress_by_task = {}
+            print(json.dumps(event, sort_keys=True), flush=True)
+            self._start_ticker()
+            return
+        if et == "task_start":
+            with self._lock:
+                self.task_started += 1
+                task_name = str(event.get("task", ""))
+                if task_name and task_name not in self._active_tasks:
+                    self._active_tasks.append(task_name)
+            return
+        if et == "task_end":
+            with self._lock:
+                self.task_done += 1
+                task_name = str(event.get("task", ""))
+                if task_name in self._active_tasks:
+                    self._active_tasks.remove(task_name)
+                self._map_progress_by_task.pop(task_name, None)
+            return
+        if et == "map_progress":
+            with self._lock:
+                task_name = str(event.get("task", ""))
+                if task_name:
+                    self._map_progress_by_task[task_name] = {
+                        "shard_total": int(event.get("shard_total", 0)),
+                        "shard_done": int(event.get("shard_done", 0)),
+                        "shard_running": int(event.get("shard_running", 0)),
+                    }
+            return
+        if et == "run_end":
+            self._stop_ticker()
+            with self._lock:
+                if self.run_id:
+                    print(json.dumps(self._summary_event(), sort_keys=True), flush=True)
+            print(json.dumps(event, sort_keys=True), flush=True)
+            return
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="claimguard")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -169,7 +611,11 @@ def main(argv: list[str] | None = None) -> int:
     run_p = sub.add_parser("run", help="Run a contract pipeline")
     run_p.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
     run_p.add_argument("--clean-state", action="store_true", help="Remove .claimguard state folder before run")
-    run_p.add_argument("--llm-output", action="store_true", help="Emit NDJSON event stream")
+    run_p.add_argument(
+        "--llm-output",
+        action="store_true",
+        help="Emit NDJSON (`run_start`, `task_summary`, `run_end`)",
+    )
     run_p.add_argument("--jobs", type=int, default=None, help="Max parallel tasks (default: CPU core count)")
     run_p.add_argument(
         "--target",
@@ -189,7 +635,7 @@ def main(argv: list[str] | None = None) -> int:
     doctor_mode.add_argument(
         "--audit-inputs",
         action="store_true",
-        help="List root input files (declared task inputs with no producing task)",
+        help="List root input files by consuming task (task<TAB>input)",
     )
 
     args = parser.parse_args(argv)
@@ -204,13 +650,15 @@ def main(argv: list[str] | None = None) -> int:
             runner.cache_root.mkdir(parents=True, exist_ok=True)
             runner.report_root.mkdir(parents=True, exist_ok=True)
             runner.run_root.mkdir(parents=True, exist_ok=True)
-        if args.llm_output:
-            def emit(event: dict[str, object]) -> None:
-                print(json.dumps(event, sort_keys=True), flush=True)
-            runner.run(event_emitter=emit, max_workers=args.jobs, targets=list(args.target))
-        else:
-            human = HumanLiveRenderer()
-            runner.run(event_emitter=human.emit, max_workers=args.jobs, targets=list(args.target))
+        try:
+            if args.llm_output:
+                llm = LLMStreamRenderer(interval_s=60.0)
+                runner.run(event_emitter=llm.emit, max_workers=args.jobs, targets=list(args.target))
+            else:
+                human = HumanLiveRenderer()
+                runner.run(event_emitter=human.emit, max_workers=args.jobs, targets=list(args.target))
+        except KeyboardInterrupt:
+            return 130
         return 0
     if args.command == "report":
         if not args.contract.exists():
@@ -254,9 +702,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.audit_inputs:
             produced = {out for spec in runner.task_specs.values() for out in spec.outputs}
-            root_inputs = sorted({rel for spec in runner.task_specs.values() for rel in spec.inputs if rel not in produced})
-            for rel in root_inputs:
-                print(rel)
+            rows = sorted(
+                (task_name, rel)
+                for task_name, spec in runner.task_specs.items()
+                for rel in spec.inputs
+                if rel not in produced
+            )
+            for task_name, rel in rows:
+                print(f"{task_name}\t{rel}")
             return 0
         print(f"workspace_root: {runner.workspace_root}")
         print(f"pipeline: {runner.contract.get('pipeline_name', '-')}")

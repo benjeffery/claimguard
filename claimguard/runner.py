@@ -12,6 +12,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -222,6 +223,31 @@ def _normalize_path_tokens(tokens: list[str], workspace_root: Path) -> list[Path
     return out
 
 
+def _path_under(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _proc_rss_bytes(pid: int) -> int:
+    if pid <= 0:
+        return 0
+    status_path = Path("/proc") / str(pid) / "status"
+    try:
+        text = status_path.read_text(encoding="utf-8")
+    except Exception:
+        return 0
+    for line in text.splitlines():
+        if not line.startswith("VmRSS:"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            return 0
+        try:
+            return max(int(parts[1]), 0) * 1024
+        except Exception:
+            return 0
+    return 0
+
+
 def _dependency_fingerprint(workspace_root: Path) -> dict[str, str]:
     ws = workspace_root.resolve()
     candidates = [
@@ -339,6 +365,80 @@ class PipelineRunner:
         self.run_root.mkdir(parents=True, exist_ok=True)
         self._rng_policy = "off"
         self._rng_seed_base = 0
+        self._cancel_event = threading.Event()
+        self._active_proc_lock = threading.Lock()
+        self._active_procs: dict[int, tuple[subprocess.Popen[str], str, float]] = {}
+
+    def _register_active_process(self, proc: subprocess.Popen[str], *, task_name: str) -> None:
+        if proc.pid is None:
+            return
+        with self._active_proc_lock:
+            self._active_procs[int(proc.pid)] = (proc, str(task_name), float(time.perf_counter()))
+
+    def _unregister_active_process(self, proc: subprocess.Popen[str]) -> None:
+        if proc.pid is None:
+            return
+        with self._active_proc_lock:
+            self._active_procs.pop(int(proc.pid), None)
+
+    def _terminate_process(self, proc: subprocess.Popen[str], *, grace_s: float = 1.0) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            return
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=max(float(grace_s), 0.1))
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        except Exception:
+            pass
+
+    def _request_cancel(self) -> None:
+        self._cancel_event.set()
+        with self._active_proc_lock:
+            running = [v[0] for v in self._active_procs.values()]
+        for proc in running:
+            self._terminate_process(proc)
+
+    def _active_task_stats(self) -> dict[str, dict[str, float | int]]:
+        with self._active_proc_lock:
+            entries = list(self._active_procs.values())
+        now = float(time.perf_counter())
+        by_task: dict[str, dict[str, float | int]] = {}
+        for proc, task_name, started_t in entries:
+            if proc.poll() is not None:
+                continue
+            pid = int(proc.pid or 0)
+            rss = _proc_rss_bytes(pid)
+            if task_name not in by_task:
+                by_task[task_name] = {
+                    "runtime_s": max(now - float(started_t), 0.0),
+                    "rss_bytes": int(rss),
+                    "_started_t": float(started_t),
+                }
+                continue
+            slot = by_task[task_name]
+            slot["rss_bytes"] = int(slot.get("rss_bytes", 0)) + int(rss)
+            prev_started = float(slot.get("_started_t", started_t))
+            if float(started_t) < prev_started:
+                slot["_started_t"] = float(started_t)
+                slot["runtime_s"] = max(now - float(started_t), 0.0)
+        out: dict[str, dict[str, float | int]] = {}
+        for task_name, vals in by_task.items():
+            out[task_name] = {
+                "runtime_s": float(vals.get("runtime_s", 0.0)),
+                "rss_bytes": int(vals.get("rss_bytes", 0)),
+            }
+        return out
 
     def _expand_map_inputs(self, spec: TaskSpec, *, strict: bool) -> list[str]:
         out: list[str] = []
@@ -429,6 +529,56 @@ class PipelineRunner:
     def _cache_file(self, task_name: str) -> Path:
         return self.cache_root / f"{_safe_name(task_name)}.json"
 
+    def _map_outputs_manifest_file(self, task_name: str) -> Path:
+        return self.cache_root / f"{_safe_name(task_name)}.map_outputs.json"
+
+    def _read_map_outputs_manifest(self, task_name: str) -> list[str]:
+        mf = self._map_outputs_manifest_file(task_name)
+        if not mf.exists():
+            return []
+        obj = _read_json(mf)
+        if not isinstance(obj, dict):
+            raise RuntimeError(f"invalid map outputs manifest (expected object): {mf}")
+        outputs = obj.get("outputs", [])
+        if not isinstance(outputs, list) or not all(isinstance(x, str) for x in outputs):
+            raise RuntimeError(f"invalid map outputs manifest outputs field: {mf}")
+        return list(dict.fromkeys(str(x) for x in outputs))
+
+    def _write_map_outputs_manifest(self, task_name: str, outputs: list[str]) -> None:
+        write_json(
+            self._map_outputs_manifest_file(task_name),
+            {
+                "task": task_name,
+                "updated_utc": _utc_now(),
+                "outputs": sorted(list(dict.fromkeys(outputs))),
+            },
+        )
+
+    def _mark_map_outputs_stale(self, task_name: str, current_outputs: list[str]) -> None:
+        previous = set(self._read_map_outputs_manifest(task_name))
+        current = set(current_outputs)
+        stale = sorted(previous.difference(current))
+        ws = self.workspace_root.resolve()
+        for rel in stale:
+            src = (ws / rel).resolve()
+            if not _path_under(src, ws):
+                raise RuntimeError(f"map stale output escapes workspace: {rel!r}")
+            if not src.exists():
+                continue
+            if src.is_dir():
+                raise RuntimeError(f"directory map outputs are not supported: {rel!r}")
+            dst = src.with_name(f"{src.name}.stale")
+            if dst.exists():
+                idx = 1
+                while True:
+                    candidate = src.with_name(f"{src.name}.stale.{idx}")
+                    if not candidate.exists():
+                        dst = candidate
+                        break
+                    idx += 1
+            src.replace(dst)
+        self._write_map_outputs_manifest(task_name, sorted(current))
+
     def _cache_key(self, spec: TaskSpec, input_hashes: dict[str, str]) -> str:
         code_files = _local_import_closure(spec.script_path, self.workspace_root)
         code_hashes = {
@@ -515,7 +665,14 @@ class PipelineRunner:
                     else:
                         tmp.unlink(missing_ok=True)
 
-    def _run_task(self, spec: TaskSpec, *, run_id: str, extra_env: dict[str, str] | None = None) -> TaskRow:
+    def _run_task(
+        self,
+        spec: TaskSpec,
+        *,
+        run_id: str,
+        extra_env: dict[str, str] | None = None,
+        top_task: str | None = None,
+    ) -> TaskRow:
         t0 = time.perf_counter()
         input_hashes = self._compute_input_hashes(spec)
         output_hashes = self._compute_output_hashes(spec)
@@ -572,6 +729,18 @@ class PipelineRunner:
                 inputs_hashes=input_hashes,
                 output_hashes=output_hashes,
             )
+        if self._cancel_event.is_set():
+            return TaskRow(
+                task=spec.name,
+                status="blocked",
+                cache_hit=False,
+                cache_reason="cancelled",
+                blocked_reason="cancelled",
+                gate_rows=[],
+                runtime_seconds=float(time.perf_counter() - t0),
+                inputs_hashes=input_hashes,
+                output_hashes=output_hashes,
+            )
 
         run_dir = self.run_root / run_id / _safe_name(spec.name)
         stage_root = run_dir / "staging" / "workspace"
@@ -614,21 +783,38 @@ class PipelineRunner:
         env.update(self._rng_env_for(spec))
         if extra_env:
             env.update({str(k): str(v) for k, v in extra_env.items()})
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, "-m", "claimguard.worker", "--script", str(spec.script_path.resolve())],
             cwd=str(stage_root.resolve()),
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
+        self._register_active_process(proc, task_name=top_task or spec.name)
+        stdout = ""
+        stderr = ""
+        try:
+            while True:
+                try:
+                    out_text, err_text = proc.communicate(timeout=0.2)
+                    stdout = out_text or ""
+                    stderr = err_text or ""
+                    break
+                except subprocess.TimeoutExpired:
+                    if self._cancel_event.is_set():
+                        self._terminate_process(proc)
+                        continue
+        finally:
+            self._unregister_active_process(proc)
         shutil.rmtree(tmp_dir, ignore_errors=True)
         write_json(
             run_dir / "process.json",
             {
                 "task": spec.name,
                 "returncode": int(proc.returncode),
-                "stdout_tail": proc.stdout[-2000:],
-                "stderr_tail": proc.stderr[-2000:],
+                "stdout_tail": stdout[-2000:],
+                "stderr_tail": stderr[-2000:],
             },
         )
 
@@ -701,7 +887,14 @@ class PipelineRunner:
             output_hashes=output_hashes,
         )
 
-    def _run_map_task(self, spec: TaskSpec, *, run_id: str, max_workers: int) -> TaskRow:
+    def _run_map_task(
+        self,
+        spec: TaskSpec,
+        *,
+        run_id: str,
+        max_workers: int,
+        progress_emitter: Callable[[dict[str, Any]], None] | None = None,
+    ) -> TaskRow:
         t0 = time.perf_counter()
         m = spec.map_config or {}
         items_input = str(m.get("items_input", ""))
@@ -744,12 +937,23 @@ class PipelineRunner:
 
         if not items:
             status = "diagnostic_only" if allow_empty else "blocked"
+            cache_hit = allow_empty
+            cache_reason = "map_empty_allowed" if allow_empty else "map_empty"
+            blocked_reason = "" if allow_empty else "map_empty"
+            if allow_empty:
+                try:
+                    self._mark_map_outputs_stale(spec.name, current_outputs=[])
+                except Exception:
+                    status = "blocked"
+                    cache_hit = False
+                    cache_reason = "map_stale_mark_failed"
+                    blocked_reason = "map_stale_mark_failed"
             return TaskRow(
                 task=spec.name,
                 status=status,
-                cache_hit=allow_empty,
-                cache_reason="map_empty_allowed" if allow_empty else "map_empty",
-                blocked_reason="" if allow_empty else "map_empty",
+                cache_hit=cache_hit,
+                cache_reason=cache_reason,
+                blocked_reason=blocked_reason,
                 gate_rows=[],
                 runtime_seconds=float(time.perf_counter() - t0),
                 inputs_hashes=input_hashes,
@@ -804,10 +1008,82 @@ class PipelineRunner:
 
         shard_rows: list[TaskRow] = []
         shard_workers = max(1, int(max_workers))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(shard_workers, len(shard_specs))) as ex:
-            futs = [ex.submit(self._run_task, shard, run_id=run_id, extra_env=env) for shard, env in shard_specs]
-            for fut in concurrent.futures.as_completed(futs):
-                shard_rows.append(fut.result())
+        if progress_emitter is not None:
+            progress_emitter(
+                {
+                    "event": "map_progress",
+                    "run_id": run_id,
+                    "task": spec.name,
+                    "shard_total": len(shard_specs),
+                    "shard_done": 0,
+                    "shard_running": 0,
+                }
+            )
+            progress_emitter(
+                {
+                    "event": "task_stats",
+                    "run_id": run_id,
+                    "tasks": self._active_task_stats(),
+                }
+            )
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=min(shard_workers, len(shard_specs)))
+        futs: list[concurrent.futures.Future[TaskRow]] = []
+        try:
+            futs = [
+                ex.submit(
+                    self._run_task,
+                    shard,
+                    run_id=run_id,
+                    extra_env=env,
+                    top_task=spec.name,
+                )
+                for shard, env in shard_specs
+            ]
+            pending = set(futs)
+            while pending:
+                done, pending = concurrent.futures.wait(
+                    pending,
+                    timeout=0.2,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                if not done:
+                    if progress_emitter is not None:
+                        progress_emitter(
+                            {
+                                "event": "task_stats",
+                                "run_id": run_id,
+                                "tasks": self._active_task_stats(),
+                            }
+                        )
+                    continue
+                for fut in done:
+                    shard_rows.append(fut.result())
+                    if progress_emitter is not None:
+                        done_count = len(shard_rows)
+                        running_count = sum(1 for f in pending if f.running())
+                        progress_emitter(
+                            {
+                                "event": "map_progress",
+                                "run_id": run_id,
+                                "task": spec.name,
+                                "shard_total": len(shard_specs),
+                                "shard_done": done_count,
+                                "shard_running": running_count,
+                            }
+                        )
+                        progress_emitter(
+                            {
+                                "event": "task_stats",
+                                "run_id": run_id,
+                                "tasks": self._active_task_stats(),
+                            }
+                        )
+        except KeyboardInterrupt:
+            self._request_cancel()
+            ex.shutdown(wait=False, cancel_futures=True)
+            raise
+        finally:
+            ex.shutdown(wait=True, cancel_futures=True)
 
         shard_rows = sorted(shard_rows, key=lambda r: r.task)
         if any(r.status == "blocked" for r in shard_rows):
@@ -825,6 +1101,15 @@ class PipelineRunner:
 
         cache_hit = all(r.cache_hit for r in shard_rows)
         cache_reason = "map_all_cache_hit" if cache_hit else "map_executed"
+        current_outputs = sorted({rel for shard, _ in shard_specs for rel in shard.outputs})
+        if status in {"ok", "replay_ok", "diagnostic_only"}:
+            try:
+                self._mark_map_outputs_stale(spec.name, current_outputs=current_outputs)
+            except Exception:
+                status = "blocked"
+                cache_hit = False
+                cache_reason = "map_stale_mark_failed"
+                blocked_reason = "map_stale_mark_failed"
         combined_output_hashes: dict[str, str] = {}
         for row in shard_rows:
             for rel, h in row.output_hashes.items():
@@ -854,6 +1139,7 @@ class PipelineRunner:
                 event_emitter(event)
 
         run_id = _make_run_id()
+        self._cancel_event.clear()
         configured_workers = max_workers
         if configured_workers is None:
             configured_workers = int(os.cpu_count() or 1)
@@ -889,6 +1175,21 @@ class PipelineRunner:
         completed: set[str] = set()
         started_count = 0
         running: dict[concurrent.futures.Future[TaskRow], str] = {}
+        last_task_stats_emit = 0.0
+
+        def maybe_emit_task_stats(force: bool = False) -> None:
+            nonlocal last_task_stats_emit
+            now = float(time.perf_counter())
+            if not force and (now - last_task_stats_emit) < 0.2:
+                return
+            emit(
+                {
+                    "event": "task_stats",
+                    "run_id": run_id,
+                    "tasks": self._active_task_stats(),
+                }
+            )
+            last_task_stats_emit = now
 
         def try_launch_ready(executor: concurrent.futures.ThreadPoolExecutor) -> bool:
             nonlocal started_count
@@ -946,7 +1247,12 @@ class PipelineRunner:
                     made_progress = True
                     continue
                 if spec.map_config is not None:
-                    row = self._run_map_task(spec, run_id=run_id, max_workers=worker_count)
+                    row = self._run_map_task(
+                        spec,
+                        run_id=run_id,
+                        max_workers=worker_count,
+                        progress_emitter=emit,
+                    )
                     rows[task_name] = row
                     completed.add(task_name)
                     emit(
@@ -963,12 +1269,14 @@ class PipelineRunner:
                     )
                     made_progress = True
                     continue
-                fut = executor.submit(self._run_task, spec, run_id=run_id)
+                fut = executor.submit(self._run_task, spec, run_id=run_id, top_task=task_name)
                 running[fut] = task_name
+                maybe_emit_task_stats(force=True)
                 made_progress = True
             return made_progress
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=worker_count)
+        try:
             while pending or running:
                 launched = try_launch_ready(executor)
                 if not running:
@@ -977,8 +1285,12 @@ class PipelineRunner:
                     continue
                 done, _ = concurrent.futures.wait(
                     set(running.keys()),
+                    timeout=0.2,
                     return_when=concurrent.futures.FIRST_COMPLETED,
                 )
+                if not done:
+                    maybe_emit_task_stats(force=False)
+                    continue
                 for fut in done:
                     task_name = running.pop(fut)
                     row = fut.result()
@@ -993,9 +1305,17 @@ class PipelineRunner:
                             "cache_hit": bool(row.cache_hit),
                             "cache_reason": row.cache_reason,
                             "blocked_reason": row.blocked_reason,
-                            "runtime_s": float(row.runtime_seconds),
-                        }
-                    )
+                                "runtime_s": float(row.runtime_seconds),
+                            }
+                        )
+                maybe_emit_task_stats(force=True)
+        except KeyboardInterrupt:
+            self._request_cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+            self._cancel_event.clear()
 
         claim_targets = sorted(selected_targets)
         claim_target = claim_targets[0] if len(claim_targets) == 1 else ""

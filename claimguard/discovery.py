@@ -25,7 +25,23 @@ def _load_optional_top_level_literal(path: Path, variable_name: str) -> dict[str
                 value_node = node.value
     if value_node is None:
         return None
-    value = ast.literal_eval(value_node)
+    try:
+        value = ast.literal_eval(value_node)
+    except (ValueError, SyntaxError) as exc:
+        line = getattr(value_node, "lineno", "?")
+        col = getattr(value_node, "col_offset", "?")
+        expr = ast.get_source_segment(source, value_node) or ""
+        expr = " ".join(expr.split())
+        if len(expr) > 180:
+            expr = expr[:177] + "..."
+        raise RuntimeError(
+            f"{path}: `{variable_name}` must be a top-level literal dict "
+            f"(only Python literals: dict/list/str/num/bool/None). "
+            f"Found non-literal expression at line {line}:{col}. "
+            f"Do not use calls/comprehensions/variable-derived expressions "
+            f"(e.g. `list(INPUTS.values())`). Use an explicit literal list/dict. "
+            f"Expression: {expr!r}"
+        ) from exc
     if not isinstance(value, dict):
         raise RuntimeError(f"`{variable_name}` must evaluate to dict in {path}")
     return value

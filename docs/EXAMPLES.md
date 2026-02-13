@@ -145,8 +145,7 @@ python3 -m claimguard.cli run --contract claimguard.json --llm-output
 Events:
 
 - `run_start`
-- `task_start`
-- `task_end`
+- `task_summary` (every 60s + final summary at run end: `current_task`, `task_started`, `task_done`, `task_left`, `task_running`; includes `map_progress` when a map task is in progress)
 - `run_end`
 
 ## 8) Quick Troubleshooting Commands
@@ -159,4 +158,3 @@ python3 -m claimguard.cli report --contract claimguard.json
 Per-task process evidence:
 
 - `.claimguard/runs/<run_id>/<task>/process.json`
-
