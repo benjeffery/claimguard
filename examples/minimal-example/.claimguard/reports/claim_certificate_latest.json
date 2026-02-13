@@ -19,12 +19,16 @@
     "prepare_data",
     "publish_rank"
   ],
-  "created_utc": "2026-02-13T13:26:44Z",
+  "created_utc": "2026-02-13T14:37:44Z",
   "evidence": [
     {
       "blocked_reason": "",
       "cache_hit": false,
       "cache_reason": "no_cache_record",
+      "cpu_affinity": [
+        0
+      ],
+      "cpu_threads_alloc": 1,
       "gate_rows": [
         {
           "expr": "interface['status'] == 'ok'",
@@ -46,6 +50,10 @@
       "blocked_reason": "",
       "cache_hit": false,
       "cache_reason": "no_cache_record",
+      "cpu_affinity": [
+        0
+      ],
+      "cpu_threads_alloc": 1,
       "gate_rows": [
         {
           "expr": "interface['status'] == 'ok'",
@@ -74,6 +82,10 @@
       "blocked_reason": "",
       "cache_hit": false,
       "cache_reason": "no_cache_record",
+      "cpu_affinity": [
+        1
+      ],
+      "cpu_threads_alloc": 1,
       "gate_rows": [
         {
           "expr": "interface['status'] == 'ok'",
@@ -108,7 +120,7 @@
     }
   ],
   "pipeline": "minimal_example",
-  "run_id": "run_20260213T132643Z_507e1cc5",
+  "run_id": "run_20260213T143744Z_967b93ad",
   "target_task": "",
   "target_tasks": []
 }

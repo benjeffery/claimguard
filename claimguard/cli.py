@@ -100,6 +100,36 @@ class HumanLiveRenderer:
             entry["shard_total"] = int(event.get("shard_total", 0))
             entry["shard_done"] = int(event.get("shard_done", 0))
             entry["shard_running"] = int(event.get("shard_running", 0))
+        elif et == "task_progress":
+            task_name = str(event.get("task", ""))
+            if task_name not in self.active_tasks:
+                self.active_tasks[task_name] = {
+                    "index": 0,
+                    "started_t": float(time.perf_counter()),
+                    "runtime_s": 0.0,
+                    "rss_bytes": 0,
+                    "shard_total": 0,
+                    "shard_done": 0,
+                    "shard_running": 0,
+                }
+            entry = self.active_tasks[task_name]
+            progress: dict[str, Any] = {}
+            if "done" in event:
+                progress["done"] = int(event.get("done", 0))
+            if "total" in event:
+                progress["total"] = int(event.get("total", 0))
+            if "fraction" in event:
+                progress["fraction"] = float(event.get("fraction", 0.0))
+            if "phase" in event:
+                phase = str(event.get("phase", "")).strip()
+                if phase:
+                    progress["phase"] = phase
+            if "message" in event:
+                message = str(event.get("message", "")).strip()
+                if message:
+                    progress["message"] = message
+            if progress:
+                entry["progress"] = progress
         elif et == "task_end":
             status = str(event.get("status", ""))
             self.rows.append(
@@ -133,7 +163,7 @@ class HumanLiveRenderer:
                         if k in counts:
                             self.status_counts[k] = int(counts[k])
         final = et == "run_end"
-        if self.is_tty and not final and et in {"task_stats", "map_progress"}:
+        if self.is_tty and not final and et in {"task_stats", "map_progress", "task_progress"}:
             now = float(time.perf_counter())
             min_interval = 1.0 / max(self.max_tty_fps, 1.0)
             if (now - self._last_tty_render_t) < min_interval:
@@ -253,12 +283,13 @@ class HumanLiveRenderer:
         used = {id(row) for row in non_ok}
         latest_budget = max(limit - len(non_ok), 0)
         latest: list[dict[str, Any]] = []
-        for row in recent_desc:
-            if id(row) in used:
-                continue
-            latest.append(row)
-            if len(latest) >= latest_budget:
-                break
+        if latest_budget > 0:
+            for row in recent_desc:
+                if id(row) in used:
+                    continue
+                latest.append(row)
+                if len(latest) >= latest_budget:
+                    break
         selected = non_ok + latest
         selected_ids = {id(row) for row in selected}
         hidden_non_ok_count = sum(
@@ -267,6 +298,8 @@ class HumanLiveRenderer:
             if id(row) not in selected_ids
         )
         if hidden_non_ok_count > 0:
+            if limit == 1:
+                return [{"__kind": "more_non_ok", "more_count": int(hidden_non_ok_count)}]
             if len(selected) >= limit:
                 removed = selected.pop()
                 if str(removed.get("status", "")) != "ok":
@@ -277,41 +310,77 @@ class HumanLiveRenderer:
                     "more_count": int(hidden_non_ok_count),
                 }
             )
-        return selected
+        return selected[:limit]
 
     def _flask_frame_lines(self) -> list[str]:
         frames = [
             [
                 "   │  │   ",
-                "  /    \\  ",
-                " /      \\ ",
-                "/~~~~~~~~\\",
+                "  / .  \\  ",
+                " /  o   \\ ",
+                "/~o~~O~~~\\",
                 "└────────┘",
             ],
             [
-                "   │  │   ",
-                "  /    \\  ",
-                " /   o  \\ ",
-                "/~~~~~~~~\\",
-                "└────────┘",
-            ],
-            [
-                "   │  │   ",
+                "   │ .│   ",
                 "  /  o \\  ",
-                " /      \\ ",
-                "/~~~~~~~~\\",
+                " / .   O\\ ",
+                "/~~o~*~~O\\",
+                "└────────┘",
+            ],
+            [
+                "   │o │   ",
+                "  / .  \\  ",
+                " /  O . \\ ",
+                "/~*~~o~~O\\",
                 "└────────┘",
             ],
             [
                 "   │ o│   ",
-                "  /    \\  ",
-                " /      \\ ",
-                "/~~~~~~~~\\",
+                "  / O. \\  ",
+                " / . o  \\ ",
+                "/~~O~~o*~\\",
+                "└────────┘",
+            ],
+            [
+                "   │ .│   ",
+                "  /  O \\  ",
+                " / o   .\\ ",
+                "/~o*~~O~~\\",
+                "└────────┘",
+            ],
+            [
+                "   │o │   ",
+                "  / .o \\  ",
+                " /  . O \\ ",
+                "/~~O~*~~o\\",
                 "└────────┘",
             ],
         ]
         idx = (self._render_tick // 2) % len(frames)
         return frames[idx]
+
+    def _colorize_flask_line(self, line: str, *, row: int) -> str:
+        if not self.use_color:
+            return line
+        glass_code = "96"
+        liquid_codes = ("34", "36", "35")
+        bubble_codes = ("33", "35", "36", "32", "94")
+        out: list[str] = []
+        for col, ch in enumerate(line):
+            if ch in {"│", "/", "\\", "└", "┘", "─"}:
+                out.append(self._colorize(ch, glass_code))
+                continue
+            if ch == "~":
+                code = liquid_codes[(self._render_tick + row + col) % len(liquid_codes)]
+                out.append(self._colorize(ch, code))
+                continue
+            if ch in {"o", "O", "*", "."}:
+                code = bubble_codes[(self._render_tick + row + col) % len(bubble_codes)]
+                out.append(self._colorize(ch, code))
+                continue
+            out.append(ch)
+        return "".join(out)
 
     def _render(self, final: bool, event_type: str) -> None:
         elapsed = time.perf_counter() - self.run_t0
@@ -419,7 +488,22 @@ class HumanLiveRenderer:
                         map_note = f"{shard_done}/{shard_total} run={shard_running} {pct}%"
                         map_note = self._colorize(self._fit(map_note, map_w), "36")
                     else:
-                        map_note = self._fit("-", map_w)
+                        progress = slot.get("progress", {})
+                        if isinstance(progress, dict) and progress:
+                            note_bits: list[str] = []
+                            if "done" in progress and "total" in progress:
+                                note_bits.append(f"{int(progress['done'])}/{int(progress['total'])}")
+                            elif "fraction" in progress:
+                                note_bits.append(f"{int(float(progress['fraction']) * 100)}%")
+                            for label in ("phase", "message"):
+                                if label in progress:
+                                    text = str(progress[label]).strip()
+                                    if text:
+                                        note_bits.append(text)
+                                        break
+                            map_note = self._fit(" ".join(note_bits), map_w) if note_bits else self._fit("-", map_w)
+                        else:
+                            map_note = self._fit("-", map_w)
                     current_lines.append(
                         f"{self._fit(task_name, task_w):<{task_w}}"
                         " "
@@ -507,7 +591,11 @@ class HumanLiveRenderer:
                 ]
                 block_h = max(len(flask_lines), len(right_lines))
                 for i in range(block_h):
-                    left = flask_lines[i] if i < len(flask_lines) else (" " * left_w)
+                    left = (
+                        self._colorize_flask_line(flask_lines[i], row=i)
+                        if i < len(flask_lines)
+                        else (" " * left_w)
+                    )
                     right = self._fit(right_lines[i], right_w) if i < len(right_lines) else ""
                     sys.stdout.write(f"{left}{' ' * gap}{right}\n")
             else:
@@ -588,6 +676,7 @@ class LLMStreamRenderer:
         self.task_done = 0
         self._active_tasks: list[str] = []
         self._map_progress_by_task: dict[str, dict[str, int]] = {}
+        self._task_progress_by_task: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._ticker: threading.Thread | None = None
@@ -625,6 +714,9 @@ class LLMStreamRenderer:
                 "shard_left": max(shard_total - shard_done, 0),
                 "shard_running": int(progress.get("shard_running", 0)),
             }
+        task_progress = self._task_progress_by_task.get(current_task, {})
+        if current_task and task_progress:
+            out["current_task_progress"] = dict(task_progress)
         return out
 
     def _tick(self) -> None:
@@ -658,6 +750,7 @@ class LLMStreamRenderer:
                 self.task_done = 0
                 self._active_tasks = []
                 self._map_progress_by_task = {}
+                self._task_progress_by_task = {}
             print(json.dumps(event, sort_keys=True), flush=True)
             self._start_ticker()
             return
@@ -675,6 +768,7 @@ class LLMStreamRenderer:
                 if task_name in self._active_tasks:
                     self._active_tasks.remove(task_name)
                 self._map_progress_by_task.pop(task_name, None)
+                self._task_progress_by_task.pop(task_name, None)
             return
         if et == "map_progress":
             with self._lock:
@@ -685,6 +779,17 @@ class LLMStreamRenderer:
                         "shard_done": int(event.get("shard_done", 0)),
                         "shard_running": int(event.get("shard_running", 0)),
                     }
+            return
+        if et == "task_progress":
+            with self._lock:
+                task_name = str(event.get("task", ""))
+                if task_name:
+                    progress: dict[str, Any] = {}
+                    for key in ("done", "total", "fraction", "phase", "message", "eta_s"):
+                        if key in event:
+                            progress[key] = event[key]
+                    if progress:
+                        self._task_progress_by_task[task_name] = progress
             return
         if et == "run_end":
             self._stop_ticker()
@@ -707,7 +812,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit NDJSON (`run_start`, `task_summary`, `run_end`)",
     )
-    run_p.add_argument("--jobs", type=int, default=None, help="Max parallel tasks (default: CPU core count)")
+    run_p.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="Global CPU thread budget for scheduling (default: available CPU cores)",
+    )
     run_p.add_argument(
         "--target",
         action="append",

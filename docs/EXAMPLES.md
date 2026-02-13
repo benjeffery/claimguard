@@ -146,6 +146,7 @@ Events:
 
 - `run_start`
 - `task_summary` (every 60s + final summary at run end: `current_task`, `task_started`, `task_done`, `task_left`, `task_running`; includes `map_progress` when a map task is in progress)
+- `task_summary` also includes `current_task_progress` when the running task emits progress
 - `run_end`
 
 ## 8) Quick Troubleshooting Commands
@@ -158,3 +159,52 @@ python3 -m claimguard.cli report --contract claimguard.json
 Per-task process evidence:
 
 - `.claimguard/runs/<run_id>/<task>/process.json`
+
+## 9) Optional Task Progress Updates
+
+Tasks can emit lightweight live progress with one helper import:
+
+```python
+from claimguard.progress import update
+
+update(done=12, total=100, phase="fit", message="epoch 12")
+```
+
+Supported fields:
+
+- `done` / `total` (integer counts)
+- `fraction` (0..1 float, optional if counts are provided)
+- `phase` and `message` (optional strings)
+- `eta_s` (optional seconds)
+- `meta` (optional JSON-serializable object)
+
+## 10) Task Resource Contract (CPU Thread Budgeting)
+
+Declare per-task resource preferences inside `CG_TASK`:
+
+```python
+CG_TASK = {
+    "inputs": ["inputs/in.txt"],
+    "outputs": ["artifacts/train/interface.json"],
+    "interface_output": "artifacts/train/interface.json",
+    "resources": {
+        "cpu_threads_min": 1,
+        "cpu_threads_pref": 4,
+        "cpu_threads_max": 8,
+        "memory_gb_max": 6.0
+    }
+}
+```
+
+Scheduler behavior:
+
+- global CPU-thread budget is `--jobs` (or available cores by default)
+- each runnable task gets at least `cpu_threads_min`
+- extra threads are allocated toward `cpu_threads_pref`, then `cpu_threads_max`
+- default (no `resources` block): `cpu_threads_min=cpu_threads_pref=cpu_threads_max=1`
+
+Worker env exported per task:
+
+- `CG_CPU_THREADS`
+- `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `GOTO_NUM_THREADS`
+- `CG_CPU_AFFINITY` (comma-separated CPU IDs)

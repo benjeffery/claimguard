@@ -108,6 +108,16 @@ def test_llm_renderer_includes_map_progress_in_task_summary() -> None:
     renderer.emit({"event": "task_start", "task": "map_worker"})
     renderer.emit(
         {
+            "event": "task_progress",
+            "task": "map_worker",
+            "done": 2,
+            "total": 5,
+            "fraction": 0.4,
+            "message": "processing",
+        }
+    )
+    renderer.emit(
+        {
             "event": "map_progress",
             "task": "map_worker",
             "shard_total": 5,
@@ -120,6 +130,12 @@ def test_llm_renderer_includes_map_progress_in_task_summary() -> None:
     assert summary["task_started"] == 1
     assert summary["task_done"] == 0
     assert summary["task_running"] == 1
+    assert summary["current_task_progress"] == {
+        "done": 2,
+        "total": 5,
+        "fraction": 0.4,
+        "message": "processing",
+    }
     assert summary["map_progress"] == {
         "task": "map_worker",
         "shard_total": 5,
@@ -157,12 +173,30 @@ def test_human_renderer_tracks_current_task_stats_and_map_progress(capsys) -> No
             "shard_running": 2,
         }
     )
+    renderer.emit(
+        {
+            "event": "task_progress",
+            "task": "map_worker",
+            "done": 4,
+            "total": 10,
+            "fraction": 0.4,
+            "phase": "fit",
+            "message": "epoch 4",
+        }
+    )
     slot = renderer.active_tasks["map_worker"]
     assert float(slot["runtime_s"]) == 3.2
     assert int(slot["rss_bytes"]) == 104857600
     assert int(slot["shard_total"]) == 5
     assert int(slot["shard_done"]) == 2
     assert int(slot["shard_running"]) == 2
+    assert slot["progress"] == {
+        "done": 4,
+        "total": 10,
+        "fraction": 0.4,
+        "phase": "fit",
+        "message": "epoch 4",
+    }
 
 
 def test_human_renderer_recent_rows_returns_unused_non_ok_space() -> None:
@@ -210,9 +244,31 @@ def test_human_renderer_recent_rows_appends_more_for_hidden_non_ok() -> None:
     assert int(selected[-1]["more_count"]) == 1
 
 
+def test_human_renderer_recent_rows_limit_one_does_not_overflow() -> None:
+    renderer = HumanLiveRenderer()
+    renderer.rows = [
+        {"task": "a", "status": "blocked", "cache_reason": "", "blocked_reason": "x", "runtime_s": 1.0},
+        {"task": "b", "status": "ok", "cache_reason": "", "blocked_reason": "", "runtime_s": 1.0},
+        {"task": "c", "status": "blocked", "cache_reason": "", "blocked_reason": "x", "runtime_s": 1.0},
+    ]
+
+    selected = renderer._select_recent_rows(limit=1)
+    assert len(selected) == 1
+    assert selected[0]["__kind"] == "more_non_ok"
+
+
 def test_human_renderer_flask_frame_has_expected_size() -> None:
     renderer = HumanLiveRenderer()
     renderer._render_tick = 0
     frame = renderer._flask_frame_lines()
     assert len(frame) == 5
     assert all(len(line) == 10 for line in frame)
+
+
+def test_human_renderer_flask_frames_keep_fixed_size_across_animation() -> None:
+    renderer = HumanLiveRenderer()
+    for tick in range(24):
+        renderer._render_tick = tick
+        frame = renderer._flask_frame_lines()
+        assert len(frame) == 5
+        assert all(len(line) == 10 for line in frame)

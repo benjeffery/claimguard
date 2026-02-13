@@ -275,6 +275,37 @@ def _configure_rng() -> None:
         _install_rng_blockers()
 
 
+def _configure_cpu_budget() -> None:
+    raw_threads = str(os.environ.get("CG_CPU_THREADS", "1")).strip()
+    try:
+        threads = max(int(raw_threads), 1)
+    except Exception:
+        threads = 1
+    os.environ["CG_CPU_THREADS"] = str(threads)
+    for key in (
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "GOTO_NUM_THREADS",
+    ):
+        os.environ[key] = str(threads)
+
+    raw_affinity = str(os.environ.get("CG_CPU_AFFINITY", "")).strip()
+    if not raw_affinity:
+        return
+    try:
+        cpu_ids = {int(tok) for tok in raw_affinity.split(",") if tok.strip()}
+    except Exception:
+        return
+    if not cpu_ids:
+        return
+    try:
+        os.sched_setaffinity(0, cpu_ids)
+    except Exception:
+        return
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="claimguard-worker")
     ap.add_argument("--script", required=True, type=Path)
@@ -282,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
 
     policy = _Policy()
     sys.addaudithook(policy.audit)
+    _configure_cpu_budget()
     _configure_rng()
 
     script_path = args.script.resolve()

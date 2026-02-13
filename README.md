@@ -102,6 +102,7 @@ Design intent:
 - map-task fanout with data-driven shard multiplicity (`CG_TASK["map"]`),
 - optional deterministic RNG policy (`off` / `seeded` / `strict`) with per-task opt-in,
 - dependency-safe task-graph (DAG) execution,
+- task-level resource contracts (`CG_TASK["resources"]`) scheduled under a global CPU-thread budget,
 - format-agnostic artifact tracking.
 
 Repository layout:
@@ -126,7 +127,14 @@ CLI output modes:
 - default: human-friendly live status (TTY redraw, line-mode fallback for logs)
 - `--llm-output`: NDJSON event stream (`run_start` / periodic `task_summary` / `run_end`)
   - `task_summary` fields: `current_task`, `task_started`, `task_done`, `task_left`, `task_running`
+  - when a task emits progress, `task_summary` includes `current_task_progress` (`done`/`total`/`fraction` + optional `phase`/`message`)
   - when a map task is active, `task_summary` also includes `map_progress` with shard counts
+
+Optional task progress (minimal boilerplate):
+- inside a task, call `claimguard.progress.update(...)` to emit live progress to CLI/LLM streams.
+- example:
+  - `from claimguard.progress import update`
+  - `update(done=42, total=100, message="training", phase="fit")`
 
 CLI commands:
 - `claimguard run [--jobs N]` -> execute pipeline
@@ -134,6 +142,19 @@ CLI commands:
 - `claimguard report` -> summarize latest run report
 - `claimguard doctor` -> validate contract/task graph and input availability
 - `claimguard doctor --audit-inputs` -> list root input files by task (`task<TAB>input`)
+
+Task resource contract (optional):
+- declare per-task budgets in `CG_TASK["resources"]`:
+  - `cpu_threads_min` (int >= 1)
+  - `cpu_threads_pref` (int >= min)
+  - `cpu_threads_max` (int >= pref or `null`)
+  - `memory_gb_max` (float > 0; currently advisory)
+- default when omitted: `min=pref=max=1` (fail-safe, avoids oversubscription)
+- scheduler enforces global CPU budget from `--jobs` (or available cores by default)
+- worker exports per-task allocation to:
+  - `CG_CPU_THREADS`
+  - `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `GOTO_NUM_THREADS`
+  - `CG_CPU_AFFINITY` (comma-separated CPU IDs; worker applies `sched_setaffinity` when possible)
 
 Run artifacts:
 - `.claimguard/reports/run_report_latest.json`

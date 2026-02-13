@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import shutil
 import subprocess
 import sys
@@ -248,6 +249,57 @@ def _proc_rss_bytes(pid: int) -> int:
     return 0
 
 
+def _normalize_task_progress_payload(obj: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    done: int | None = None
+    total: int | None = None
+
+    if "done" in obj:
+        try:
+            done = max(int(obj.get("done", 0)), 0)
+            out["done"] = done
+        except Exception:
+            done = None
+    if "total" in obj:
+        try:
+            total = max(int(obj.get("total", 0)), 0)
+            out["total"] = total
+        except Exception:
+            total = None
+    if done is not None and total is not None and total > 0:
+        out["fraction"] = min(max(float(done) / float(total), 0.0), 1.0)
+
+    if "fraction" in obj:
+        try:
+            out["fraction"] = min(max(float(obj.get("fraction", 0.0)), 0.0), 1.0)
+        except Exception:
+            pass
+
+    if "message" in obj:
+        msg = str(obj.get("message", "")).strip()
+        if msg:
+            out["message"] = msg
+    if "phase" in obj:
+        phase = str(obj.get("phase", "")).strip()
+        if phase:
+            out["phase"] = phase
+    if "eta_s" in obj:
+        try:
+            eta_s = max(float(obj.get("eta_s", 0.0)), 0.0)
+            out["eta_s"] = eta_s
+        except Exception:
+            pass
+    if "meta" in obj:
+        meta = obj.get("meta")
+        try:
+            json.dumps(meta)
+            out["meta"] = meta
+        except Exception:
+            pass
+
+    return out
+
+
 def _dependency_fingerprint(workspace_root: Path) -> dict[str, str]:
     ws = workspace_root.resolve()
     candidates = [
@@ -331,6 +383,8 @@ class TaskRow:
     runtime_seconds: float
     inputs_hashes: dict[str, str]
     output_hashes: dict[str, str]
+    cpu_threads_alloc: int = 1
+    cpu_affinity: list[int] | None = None
 
 
 class PipelineRunner:
@@ -384,17 +438,39 @@ class PipelineRunner:
     def _terminate_process(self, proc: subprocess.Popen[str], *, grace_s: float = 1.0) -> None:
         if proc.poll() is not None:
             return
-        try:
-            proc.terminate()
-        except ProcessLookupError:
-            return
-        except Exception:
-            pass
+        pid = int(proc.pid or 0)
+        sent_term = False
+        if pid > 0:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                sent_term = True
+            except ProcessLookupError:
+                return
+            except Exception:
+                sent_term = False
+        if not sent_term:
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                return
+            except Exception:
+                pass
         try:
             proc.wait(timeout=max(float(grace_s), 0.1))
             return
         except subprocess.TimeoutExpired:
             pass
+        sent_kill = False
+        if pid > 0:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+                sent_kill = True
+            except ProcessLookupError:
+                return
+            except Exception:
+                sent_kill = False
+        if sent_kill:
+            return
         try:
             proc.kill()
         except ProcessLookupError:
@@ -439,6 +515,43 @@ class PipelineRunner:
                 "rss_bytes": int(vals.get("rss_bytes", 0)),
             }
         return out
+
+    def _task_cpu_limits(self, spec: TaskSpec) -> tuple[int, int, int | None]:
+        resources = dict(getattr(spec, "resources", {}) or {})
+        min_threads = max(int(resources.get("cpu_threads_min", 1)), 1)
+        pref_threads = max(int(resources.get("cpu_threads_pref", min_threads)), min_threads)
+        max_raw = resources.get("cpu_threads_max", pref_threads)
+        max_threads = max(int(max_raw), pref_threads) if max_raw is not None else None
+        return min_threads, pref_threads, max_threads
+
+    def _available_cpu_ids(self) -> list[int]:
+        try:
+            return sorted(int(x) for x in os.sched_getaffinity(0))
+        except Exception:
+            count = int(os.cpu_count() or 1)
+            return list(range(max(count, 1)))
+
+    def _critical_path_scores(self, selected_tasks: set[str]) -> dict[str, int]:
+        reverse_deps: dict[str, list[str]] = {t: [] for t in selected_tasks}
+        for t in selected_tasks:
+            for dep in self.deps.get(t, []):
+                if dep in selected_tasks:
+                    reverse_deps.setdefault(dep, []).append(t)
+        memo: dict[str, int] = {}
+
+        def score(task: str) -> int:
+            if task in memo:
+                return memo[task]
+            kids = [k for k in reverse_deps.get(task, []) if k in selected_tasks]
+            if not kids:
+                memo[task] = 1
+            else:
+                memo[task] = 1 + max(score(k) for k in kids)
+            return memo[task]
+
+        for task in selected_tasks:
+            score(task)
+        return memo
 
     def _expand_map_inputs(self, spec: TaskSpec, *, strict: bool) -> list[str]:
         out: list[str] = []
@@ -672,8 +785,13 @@ class PipelineRunner:
         run_id: str,
         extra_env: dict[str, str] | None = None,
         top_task: str | None = None,
+        progress_emitter: Callable[[dict[str, Any]], None] | None = None,
+        cpu_threads_alloc: int = 1,
+        cpu_affinity: list[int] | None = None,
     ) -> TaskRow:
         t0 = time.perf_counter()
+        alloc_threads = max(int(cpu_threads_alloc), 1)
+        affinity_ids = sorted({int(x) for x in (cpu_affinity or [])}) if cpu_affinity else None
         input_hashes = self._compute_input_hashes(spec)
         output_hashes = self._compute_output_hashes(spec)
         if any(v == "DIRECTORY" for v in input_hashes.values()):
@@ -687,6 +805,8 @@ class PipelineRunner:
                 runtime_seconds=float(time.perf_counter() - t0),
                 inputs_hashes=input_hashes,
                 output_hashes=output_hashes,
+                cpu_threads_alloc=alloc_threads,
+                cpu_affinity=affinity_ids,
             )
         if any(v == "DIRECTORY" for v in output_hashes.values()):
             return TaskRow(
@@ -699,6 +819,8 @@ class PipelineRunner:
                 runtime_seconds=float(time.perf_counter() - t0),
                 inputs_hashes=input_hashes,
                 output_hashes=output_hashes,
+                cpu_threads_alloc=alloc_threads,
+                cpu_affinity=affinity_ids,
             )
         if any(
             (self.workspace_root / rel).resolve().exists() and (self.workspace_root / rel).resolve().is_dir()
@@ -714,6 +836,8 @@ class PipelineRunner:
                 runtime_seconds=float(time.perf_counter() - t0),
                 inputs_hashes=input_hashes,
                 output_hashes=output_hashes,
+                cpu_threads_alloc=alloc_threads,
+                cpu_affinity=affinity_ids,
             )
         cache_key = self._cache_key(spec, input_hashes)
         cache_hit, cache_reason = self._cache_hit_reason(spec, cache_key, output_hashes)
@@ -728,6 +852,8 @@ class PipelineRunner:
                 runtime_seconds=float(time.perf_counter() - t0),
                 inputs_hashes=input_hashes,
                 output_hashes=output_hashes,
+                cpu_threads_alloc=alloc_threads,
+                cpu_affinity=affinity_ids,
             )
         if self._cancel_event.is_set():
             return TaskRow(
@@ -740,6 +866,8 @@ class PipelineRunner:
                 runtime_seconds=float(time.perf_counter() - t0),
                 inputs_hashes=input_hashes,
                 output_hashes=output_hashes,
+                cpu_threads_alloc=alloc_threads,
+                cpu_affinity=affinity_ids,
             )
 
         run_dir = self.run_root / run_id / _safe_name(spec.name)
@@ -771,6 +899,8 @@ class PipelineRunner:
                 "CG_WORKSPACE_ROOT": str(self.workspace_root.resolve()),
                 "CG_TASK_NAME": spec.name,
                 "CG_TASK_PARAMS_JSON": params_json,
+                "CG_CPU_THREADS": str(alloc_threads),
+                "CG_PROGRESS_MIN_INTERVAL_S": "0.2",
                 "CG_ENFORCE_IO": "1",
                 "CG_ALLOWED_READS_JSON": allowed_reads_json,
                 "CG_ALLOWED_WRITES_JSON": allowed_writes_json,
@@ -780,9 +910,86 @@ class PipelineRunner:
                 "PYTHONUNBUFFERED": "1",
             }
         )
+        if affinity_ids:
+            env["CG_CPU_AFFINITY"] = ",".join(str(x) for x in affinity_ids)
         env.update(self._rng_env_for(spec))
         if extra_env:
             env.update({str(k): str(v) for k, v in extra_env.items()})
+        progress_read_fd: int | None = None
+        progress_write_fd: int | None = None
+        progress_buffer = ""
+        progress_pending: dict[str, Any] | None = None
+        last_progress_emit_t = 0.0
+        progress_emit_interval_s = 0.2
+        if progress_emitter is not None:
+            progress_read_fd, progress_write_fd = os.pipe()
+            os.set_blocking(progress_read_fd, False)
+            env["CG_PROGRESS_FD"] = str(progress_write_fd)
+
+        def maybe_emit_progress(force: bool = False) -> None:
+            nonlocal progress_pending, last_progress_emit_t
+            if progress_pending is None or progress_emitter is None:
+                return
+            now = float(time.perf_counter())
+            if not force and (now - last_progress_emit_t) < progress_emit_interval_s:
+                return
+            event: dict[str, Any] = {
+                "event": "task_progress",
+                "run_id": run_id,
+                "task": top_task or spec.name,
+            }
+            if top_task and top_task != spec.name:
+                event["source_task"] = spec.name
+            event.update(progress_pending)
+            progress_emitter(event)
+            progress_pending = None
+            last_progress_emit_t = now
+
+        def drain_progress_frames(force: bool = False) -> None:
+            nonlocal progress_buffer, progress_pending
+            if progress_read_fd is None:
+                return
+            while True:
+                try:
+                    chunk = os.read(progress_read_fd, 16384)
+                except BlockingIOError:
+                    break
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                progress_buffer += chunk.decode("utf-8", errors="replace")
+            while "\n" in progress_buffer:
+                line, progress_buffer = progress_buffer.split("\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                normalized = _normalize_task_progress_payload(obj)
+                if normalized:
+                    progress_pending = normalized
+            if force:
+                tail = progress_buffer.strip()
+                progress_buffer = ""
+                if tail:
+                    try:
+                        obj = json.loads(tail)
+                    except Exception:
+                        obj = None
+                    if isinstance(obj, dict):
+                        normalized = _normalize_task_progress_payload(obj)
+                        if normalized:
+                            progress_pending = normalized
+            maybe_emit_progress(force=force)
+
+        popen_kwargs: dict[str, Any] = {}
+        if progress_write_fd is not None:
+            popen_kwargs["pass_fds"] = (progress_write_fd,)
         proc = subprocess.Popen(
             [sys.executable, "-m", "claimguard.worker", "--script", str(spec.script_path.resolve())],
             cwd=str(stage_root.resolve()),
@@ -790,7 +997,15 @@ class PipelineRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
+            **popen_kwargs,
         )
+        if progress_write_fd is not None:
+            try:
+                os.close(progress_write_fd)
+            except Exception:
+                pass
+            progress_write_fd = None
         self._register_active_process(proc, task_name=top_task or spec.name)
         stdout = ""
         stderr = ""
@@ -800,13 +1015,25 @@ class PipelineRunner:
                     out_text, err_text = proc.communicate(timeout=0.2)
                     stdout = out_text or ""
                     stderr = err_text or ""
+                    drain_progress_frames(force=True)
                     break
                 except subprocess.TimeoutExpired:
+                    drain_progress_frames(force=False)
                     if self._cancel_event.is_set():
                         self._terminate_process(proc)
                         continue
         finally:
             self._unregister_active_process(proc)
+            if progress_write_fd is not None:
+                try:
+                    os.close(progress_write_fd)
+                except Exception:
+                    pass
+            if progress_read_fd is not None:
+                try:
+                    os.close(progress_read_fd)
+                except Exception:
+                    pass
         shutil.rmtree(tmp_dir, ignore_errors=True)
         write_json(
             run_dir / "process.json",
@@ -885,6 +1112,8 @@ class PipelineRunner:
             runtime_seconds=float(time.perf_counter() - t0),
             inputs_hashes=input_hashes,
             output_hashes=output_hashes,
+            cpu_threads_alloc=alloc_threads,
+            cpu_affinity=affinity_ids,
         )
 
     def _run_map_task(
@@ -894,8 +1123,12 @@ class PipelineRunner:
         run_id: str,
         max_workers: int,
         progress_emitter: Callable[[dict[str, Any]], None] | None = None,
+        cpu_threads_alloc: int = 1,
+        cpu_affinity: list[int] | None = None,
     ) -> TaskRow:
         t0 = time.perf_counter()
+        alloc_threads = max(int(cpu_threads_alloc), 1)
+        affinity_ids = sorted({int(x) for x in (cpu_affinity or [])}) if cpu_affinity else None
         m = spec.map_config or {}
         items_input = str(m.get("items_input", ""))
         items_path = str(m.get("items_path", ""))
@@ -915,6 +1148,8 @@ class PipelineRunner:
                 runtime_seconds=float(time.perf_counter() - t0),
                 inputs_hashes=input_hashes,
                 output_hashes={},
+                cpu_threads_alloc=alloc_threads,
+                cpu_affinity=affinity_ids,
             )
         try:
             root_obj = _read_json(items_file)
@@ -933,6 +1168,8 @@ class PipelineRunner:
                 runtime_seconds=float(time.perf_counter() - t0),
                 inputs_hashes=input_hashes,
                 output_hashes={},
+                cpu_threads_alloc=alloc_threads,
+                cpu_affinity=affinity_ids,
             )
 
         if not items:
@@ -958,6 +1195,8 @@ class PipelineRunner:
                 runtime_seconds=float(time.perf_counter() - t0),
                 inputs_hashes=input_hashes,
                 output_hashes={},
+                cpu_threads_alloc=alloc_threads,
+                cpu_affinity=affinity_ids,
             )
 
         shard_specs: list[tuple[TaskSpec, dict[str, str]]] = []
@@ -995,6 +1234,7 @@ class PipelineRunner:
                 allow_subprocess=spec.allow_subprocess,
                 allow_rng=spec.allow_rng,
                 map_config=None,
+                resources={"cpu_threads_min": 1, "cpu_threads_pref": 1, "cpu_threads_max": 1, "memory_gb_max": None},
                 params=spec.params,
             )
             shard_env = {
@@ -1007,7 +1247,7 @@ class PipelineRunner:
             shard_specs.append((shard, shard_env))
 
         shard_rows: list[TaskRow] = []
-        shard_workers = max(1, int(max_workers))
+        shard_workers = max(1, min(int(max_workers), alloc_threads))
         if progress_emitter is not None:
             progress_emitter(
                 {
@@ -1029,6 +1269,9 @@ class PipelineRunner:
         ex = concurrent.futures.ThreadPoolExecutor(max_workers=min(shard_workers, len(shard_specs)))
         futs: list[concurrent.futures.Future[TaskRow]] = []
         try:
+            shard_affinity_pool = list(affinity_ids or [])
+            if not shard_affinity_pool:
+                shard_affinity_pool = self._available_cpu_ids()[: max(shard_workers, 1)]
             futs = [
                 ex.submit(
                     self._run_task,
@@ -1036,8 +1279,11 @@ class PipelineRunner:
                     run_id=run_id,
                     extra_env=env,
                     top_task=spec.name,
+                    progress_emitter=progress_emitter,
+                    cpu_threads_alloc=1,
+                    cpu_affinity=[shard_affinity_pool[idx % len(shard_affinity_pool)]],
                 )
-                for shard, env in shard_specs
+                for idx, (shard, env) in enumerate(shard_specs)
             ]
             pending = set(futs)
             while pending:
@@ -1125,6 +1371,8 @@ class PipelineRunner:
             runtime_seconds=float(time.perf_counter() - t0),
             inputs_hashes=input_hashes,
             output_hashes=combined_output_hashes,
+            cpu_threads_alloc=alloc_threads,
+            cpu_affinity=affinity_ids,
         )
 
     def run(
@@ -1143,7 +1391,9 @@ class PipelineRunner:
         configured_workers = max_workers
         if configured_workers is None:
             configured_workers = int(os.cpu_count() or 1)
-        worker_count = max(1, int(configured_workers))
+        available_cpu_ids = self._available_cpu_ids()
+        configured_jobs = max(1, int(configured_workers))
+        cpu_thread_budget = max(1, min(configured_jobs, len(available_cpu_ids)))
         policy = str(self.contract.get("rng_policy", "off")).strip().lower()
         if policy not in {"off", "seeded", "strict"}:
             raise RuntimeError(f"unsupported rng_policy: {policy}")
@@ -1157,24 +1407,36 @@ class PipelineRunner:
             selected_tasks = _dependency_closure(selected_targets, self.deps)
         else:
             selected_tasks = set(self.task_specs.keys())
+        impossible = sorted(
+            t
+            for t in selected_tasks
+            if self._task_cpu_limits(self.task_specs[t])[0] > cpu_thread_budget
+        )
+        if impossible:
+            raise RuntimeError(
+                f"task(s) require cpu_threads_min above global budget {cpu_thread_budget}: {impossible}"
+            )
         emit(
             {
                 "event": "run_start",
                 "run_id": run_id,
                 "pipeline": str(self.contract.get("pipeline_name", "")),
                 "task_count": len(selected_tasks),
-                "max_workers": worker_count,
+                "max_workers": configured_jobs,
+                "cpu_thread_budget": cpu_thread_budget,
                 "rng_policy": self._rng_policy,
                 "targets": selected_targets,
             }
         )
 
+        critical_scores = self._critical_path_scores(selected_tasks)
         rows: dict[str, TaskRow] = {}
         task_total = len(selected_tasks)
         pending: set[str] = set(selected_tasks)
         completed: set[str] = set()
         started_count = 0
-        running: dict[concurrent.futures.Future[TaskRow], str] = {}
+        running: dict[concurrent.futures.Future[TaskRow], tuple[str, int, list[int]]] = {}
+        allocated_cpu_ids: set[int] = set()
         last_task_stats_emit = 0.0
 
         def maybe_emit_task_stats(force: bool = False) -> None:
@@ -1194,19 +1456,95 @@ class PipelineRunner:
         def try_launch_ready(executor: concurrent.futures.ThreadPoolExecutor) -> bool:
             nonlocal started_count
             made_progress = False
-            while len(running) < worker_count:
-                ready = sorted(t for t in pending if set(self.deps.get(t, [])).issubset(completed))
-                if not ready:
-                    break
-                if running:
-                    non_map_ready = [t for t in ready if self.task_specs[t].map_config is None]
-                    if not non_map_ready:
+            running_cpu_threads = sum(int(v[1]) for v in running.values())
+            free_threads = max(cpu_thread_budget - running_cpu_threads, 0)
+            if free_threads <= 0:
+                return False
+
+            ready_all = [t for t in pending if set(self.deps.get(t, [])).issubset(completed)]
+            if not ready_all:
+                return False
+            ready_sorted = sorted(
+                ready_all,
+                key=lambda t: (-int(critical_scores.get(t, 0)), t),
+            )
+            if running:
+                ready_sorted = [t for t in ready_sorted if self.task_specs[t].map_config is None]
+                if not ready_sorted:
+                    return False
+
+            selected: list[str] = []
+            remaining_for_mins = free_threads
+            for task_name in ready_sorted:
+                min_threads, _, _ = self._task_cpu_limits(self.task_specs[task_name])
+                if min_threads > remaining_for_mins:
+                    continue
+                selected.append(task_name)
+                remaining_for_mins -= min_threads
+            if not selected:
+                return False
+            if self.task_specs[selected[0]].map_config is not None:
+                selected = [selected[0]]
+
+            limits: dict[str, tuple[int, int, int | None]] = {
+                task_name: self._task_cpu_limits(self.task_specs[task_name]) for task_name in selected
+            }
+            allocations: dict[str, int] = {}
+            for task_name in selected:
+                min_threads, _, _ = limits[task_name]
+                allocations[task_name] = min_threads
+            extra_threads = max(free_threads - sum(allocations.values()), 0)
+
+            def spread_extra(cap_fn: Callable[[str], int]) -> None:
+                nonlocal extra_threads
+                while extra_threads > 0:
+                    progressed = False
+                    for task_name in selected:
+                        cap = max(cap_fn(task_name), allocations[task_name])
+                        if allocations[task_name] >= cap:
+                            continue
+                        allocations[task_name] += 1
+                        extra_threads -= 1
+                        progressed = True
+                        if extra_threads <= 0:
+                            break
+                    if not progressed:
                         break
-                    task_name = non_map_ready[0]
-                else:
-                    task_name = ready[0]
+
+            spread_extra(
+                lambda task_name: min(
+                    limits[task_name][1],
+                    limits[task_name][2] if limits[task_name][2] is not None else limits[task_name][1],
+                )
+            )
+            spread_extra(
+                lambda task_name: (
+                    limits[task_name][2] if limits[task_name][2] is not None else cpu_thread_budget
+                )
+            )
+
+            def claim_cpu_ids(threads: int) -> list[int]:
+                if threads <= 0:
+                    return []
+                free_ids = [cpu for cpu in available_cpu_ids if cpu not in allocated_cpu_ids]
+                chosen = free_ids[:threads]
+                if len(chosen) < threads:
+                    for cpu in available_cpu_ids:
+                        if cpu in chosen:
+                            continue
+                        chosen.append(cpu)
+                        if len(chosen) >= threads:
+                            break
+                for cpu in chosen:
+                    allocated_cpu_ids.add(cpu)
+                return chosen
+
+            for task_name in selected:
                 pending.remove(task_name)
                 started_count += 1
+                cpu_threads_alloc = max(int(allocations.get(task_name, 1)), 1)
+                spec = self.task_specs[task_name]
+                cpu_affinity = claim_cpu_ids(cpu_threads_alloc)
                 emit(
                     {
                         "event": "task_start",
@@ -1214,9 +1552,9 @@ class PipelineRunner:
                         "task": task_name,
                         "index": started_count,
                         "of": task_total,
+                        "cpu_threads_alloc": cpu_threads_alloc,
                     }
                 )
-                spec = self.task_specs[task_name]
                 blocked_upstream = any(rows[d].status == "blocked" for d in self.deps.get(task_name, []))
                 if blocked_upstream:
                     row = TaskRow(
@@ -1229,7 +1567,11 @@ class PipelineRunner:
                         runtime_seconds=0.0,
                         inputs_hashes=self._compute_input_hashes(spec),
                         output_hashes=self._compute_output_hashes(spec),
+                        cpu_threads_alloc=cpu_threads_alloc,
+                        cpu_affinity=cpu_affinity,
                     )
+                    for cpu in cpu_affinity:
+                        allocated_cpu_ids.discard(cpu)
                     rows[task_name] = row
                     completed.add(task_name)
                     emit(
@@ -1247,12 +1589,18 @@ class PipelineRunner:
                     made_progress = True
                     continue
                 if spec.map_config is not None:
-                    row = self._run_map_task(
-                        spec,
-                        run_id=run_id,
-                        max_workers=worker_count,
-                        progress_emitter=emit,
-                    )
+                    try:
+                        row = self._run_map_task(
+                            spec,
+                            run_id=run_id,
+                            max_workers=cpu_thread_budget,
+                            progress_emitter=emit,
+                            cpu_threads_alloc=cpu_threads_alloc,
+                            cpu_affinity=cpu_affinity,
+                        )
+                    finally:
+                        for cpu in cpu_affinity:
+                            allocated_cpu_ids.discard(cpu)
                     rows[task_name] = row
                     completed.add(task_name)
                     emit(
@@ -1269,13 +1617,21 @@ class PipelineRunner:
                     )
                     made_progress = True
                     continue
-                fut = executor.submit(self._run_task, spec, run_id=run_id, top_task=task_name)
-                running[fut] = task_name
+                fut = executor.submit(
+                    self._run_task,
+                    spec,
+                    run_id=run_id,
+                    top_task=task_name,
+                    progress_emitter=emit,
+                    cpu_threads_alloc=cpu_threads_alloc,
+                    cpu_affinity=cpu_affinity,
+                )
+                running[fut] = (task_name, cpu_threads_alloc, cpu_affinity)
                 maybe_emit_task_stats(force=True)
                 made_progress = True
             return made_progress
 
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=worker_count)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(task_total, cpu_thread_budget)))
         try:
             while pending or running:
                 launched = try_launch_ready(executor)
@@ -1292,7 +1648,9 @@ class PipelineRunner:
                     maybe_emit_task_stats(force=False)
                     continue
                 for fut in done:
-                    task_name = running.pop(fut)
+                    task_name, _, affinity = running.pop(fut)
+                    for cpu in affinity:
+                        allocated_cpu_ids.discard(cpu)
                     row = fut.result()
                     rows[task_name] = row
                     completed.add(task_name)
@@ -1341,6 +1699,8 @@ class PipelineRunner:
                 "runtime_seconds": r.runtime_seconds,
                 "inputs_hashes": r.inputs_hashes,
                 "output_hashes": r.output_hashes,
+                "cpu_threads_alloc": int(r.cpu_threads_alloc),
+                "cpu_affinity": list(r.cpu_affinity or []),
             }
             for _, r in sorted(rows.items())
         ]
@@ -1351,7 +1711,8 @@ class PipelineRunner:
             "pipeline": str(self.contract.get("pipeline_name", "")),
             "summary": {
                 "task_count": len(selected_tasks),
-                "max_workers": worker_count,
+                "max_workers": configured_jobs,
+                "cpu_thread_budget": cpu_thread_budget,
                 "rng_policy": self._rng_policy,
                 "rng_seed_base": self._rng_seed_base,
                 "cache_hits": sum(1 for r in rows.values() if r.cache_hit),
@@ -1414,6 +1775,8 @@ class PipelineRunner:
                     "cache_hit": bool(rows[t].cache_hit) if t in rows else False,
                     "cache_reason": rows[t].cache_reason if t in rows else "missing",
                     "blocked_reason": rows[t].blocked_reason if t in rows else "missing",
+                    "cpu_threads_alloc": int(rows[t].cpu_threads_alloc) if t in rows else 0,
+                    "cpu_affinity": list(rows[t].cpu_affinity or []) if t in rows else [],
                     "interface_output": self.task_specs[t].interface_output if t in self.task_specs else "",
                     "output_hashes": rows[t].output_hashes if t in rows else {},
                     "gate_rows": rows[t].gate_rows if t in rows else [],

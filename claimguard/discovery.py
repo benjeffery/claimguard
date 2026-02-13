@@ -55,6 +55,10 @@ def _validate_rel_path_token(task_name: str, field_name: str, token: str) -> Non
         raise RuntimeError(f"task `{task_name}` `{field_name}` cannot contain parent traversal: {token!r}")
 
 
+def _is_int_not_bool(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 @dataclass(frozen=True)
 class TaskSpec:
     name: str
@@ -70,6 +74,7 @@ class TaskSpec:
     allow_subprocess: bool
     allow_rng: bool
     map_config: dict[str, Any] | None
+    resources: dict[str, Any]
     params: dict[str, Any]
 
 
@@ -100,6 +105,8 @@ def _validate_task_dict(task_name: str, spec: dict[str, Any]) -> None:
         raise RuntimeError(f"task `{task_name}` has invalid `allow_rng`")
     if "params" in spec and not isinstance(spec.get("params"), dict):
         raise RuntimeError(f"task `{task_name}` has invalid `params`")
+    if "resources" in spec and not isinstance(spec.get("resources"), dict):
+        raise RuntimeError(f"task `{task_name}` has invalid `resources`")
     if str(spec["interface_output"]) not in set(spec["outputs"]):
         raise RuntimeError(f"task `{task_name}` interface_output must be listed in outputs")
     if len(spec["outputs"]) == 0:
@@ -168,6 +175,25 @@ def _validate_task_dict(task_name: str, spec: dict[str, Any]) -> None:
     if set(spec["inputs"]).intersection(set(spec["outputs"])):
         raise RuntimeError(f"task `{task_name}` cannot read and write same artifact path")
 
+    resources = dict(spec.get("resources", {}))
+    known_resource_keys = {"cpu_threads_min", "cpu_threads_pref", "cpu_threads_max", "memory_gb_max"}
+    unknown_resource_keys = sorted(set(resources.keys()).difference(known_resource_keys))
+    if unknown_resource_keys:
+        raise RuntimeError(f"task `{task_name}` has unknown resources keys: {unknown_resource_keys}")
+    min_threads = resources.get("cpu_threads_min", 1)
+    pref_threads = resources.get("cpu_threads_pref", min_threads)
+    max_threads = resources.get("cpu_threads_max", pref_threads)
+    if not _is_int_not_bool(min_threads) or int(min_threads) < 1:
+        raise RuntimeError(f"task `{task_name}` resources.cpu_threads_min must be int >= 1")
+    if not _is_int_not_bool(pref_threads) or int(pref_threads) < int(min_threads):
+        raise RuntimeError(f"task `{task_name}` resources.cpu_threads_pref must be int >= cpu_threads_min")
+    if max_threads is not None and (not _is_int_not_bool(max_threads) or int(max_threads) < int(pref_threads)):
+        raise RuntimeError(f"task `{task_name}` resources.cpu_threads_max must be null or int >= cpu_threads_pref")
+    if "memory_gb_max" in resources:
+        mem = resources.get("memory_gb_max")
+        if not isinstance(mem, (int, float)) or float(mem) <= 0.0:
+            raise RuntimeError(f"task `{task_name}` resources.memory_gb_max must be number > 0")
+
 
 def discover_tasks(
     *,
@@ -210,6 +236,11 @@ def discover_tasks(
 
     task_specs: dict[str, TaskSpec] = {}
     for name, spec in raw_by_name.items():
+        resource_in = dict(spec.get("resources", {}))
+        cpu_threads_min = int(resource_in.get("cpu_threads_min", 1))
+        cpu_threads_pref = int(resource_in.get("cpu_threads_pref", cpu_threads_min))
+        cpu_threads_max_raw = resource_in.get("cpu_threads_max", cpu_threads_pref)
+        cpu_threads_max = int(cpu_threads_max_raw) if cpu_threads_max_raw is not None else None
         task_specs[name] = TaskSpec(
             name=name,
             script_rel=str(spec["script_rel"]),
@@ -230,6 +261,12 @@ def discover_tasks(
             allow_subprocess=bool(spec.get("allow_subprocess", False)),
             allow_rng=bool(spec.get("allow_rng", False)),
             map_config=dict(spec.get("map")) if isinstance(spec.get("map"), dict) else None,
+            resources={
+                "cpu_threads_min": cpu_threads_min,
+                "cpu_threads_pref": cpu_threads_pref,
+                "cpu_threads_max": cpu_threads_max,
+                "memory_gb_max": (float(resource_in.get("memory_gb_max")) if "memory_gb_max" in resource_in else None),
+            },
             params=dict(spec.get("params", {})),
         )
     return task_specs
