@@ -413,7 +413,7 @@ class HumanLiveRenderer:
             fixed_lines = header_lines_count + 8
             if final:
                 fixed_lines += 4
-            data_budget = max(height - fixed_lines, 2)
+            data_budget = max(height - fixed_lines - 2, 1)
 
             active_rows = sorted(
                 self.active_tasks.items(),
@@ -577,7 +577,7 @@ class HumanLiveRenderer:
                     f"{self._fit('-', recent_note_w):>{recent_note_w}}"
                 )
 
-            sys.stdout.write("\x1b[2J\x1b[H")
+            screen_lines: list[str] = []
             if show_flask:
                 flask_lines = self._flask_frame_lines()
                 left_w = len(flask_lines[0]) if flask_lines else 10
@@ -597,45 +597,48 @@ class HumanLiveRenderer:
                         else (" " * left_w)
                     )
                     right = self._fit(right_lines[i], right_w) if i < len(right_lines) else ""
-                    sys.stdout.write(f"{left}{' ' * gap}{right}\n")
+                    screen_lines.append(f"{left}{' ' * gap}{right}")
             else:
-                sys.stdout.write("claimguard live status\n")
-                sys.stdout.write(f"pipeline: {self.pipeline or '-'}  run_id: {self.run_id or '-'}\n")
-                sys.stdout.write(f"{self._fit(progress_line, width)}\n")
-                sys.stdout.write(f"{counts_line}\n")
-            sys.stdout.write(f"\n{self._fit(current_header, width)}\n")
-            sys.stdout.write(
+                screen_lines.append("claimguard live status")
+                screen_lines.append(f"pipeline: {self.pipeline or '-'}  run_id: {self.run_id or '-'}")
+                screen_lines.append(f"{self._fit(progress_line, width)}")
+                screen_lines.append(f"{counts_line}")
+            screen_lines.append("")
+            screen_lines.append(self._fit(current_header, width))
+            screen_lines.append(
                 f"{self._fit('task', task_w):<{task_w}}"
                 " "
                 f"{'runtime(s)':>{runtime_w}}"
                 " "
                 f"{'mem(MiB)':>{mem_w}}"
                 " "
-                f"{self._fit('map', map_w):>{map_w}}\n"
+                f"{self._fit('map', map_w):>{map_w}}"
             )
-            sys.stdout.write(f"{'-' * width}\n")
+            screen_lines.append("-" * width)
             for line in current_lines:
-                sys.stdout.write(f"{line}\n")
-            sys.stdout.write(f"\n{self._fit(recent_header, width)}\n")
-            sys.stdout.write(
+                screen_lines.append(line)
+            screen_lines.append("")
+            screen_lines.append(self._fit(recent_header, width))
+            screen_lines.append(
                 f"{self._fit('task', recent_task_w):<{recent_task_w}}"
                 " "
                 f"{self._fit('status', recent_status_w):<{recent_status_w}}"
                 " "
                 f"{'runtime(s)':>{recent_runtime_w}}"
                 " "
-                f"{self._fit('note', recent_note_w):>{recent_note_w}}\n"
+                f"{self._fit('note', recent_note_w):>{recent_note_w}}"
             )
-            sys.stdout.write(f"{'-' * width}\n")
+            screen_lines.append("-" * width)
             for line in recent_lines:
-                sys.stdout.write(f"{line}\n")
+                screen_lines.append(line)
             if final:
-                sys.stdout.write("\n")
-                sys.stdout.write(f"claim_class: {self.claim_class}\n")
+                screen_lines.append("")
+                screen_lines.append(f"claim_class: {self.claim_class}")
                 if self.report_json:
-                    sys.stdout.write(f"report_json: {self.report_json}\n")
+                    screen_lines.append(f"report_json: {self.report_json}")
                 if self.claim_certificate_json:
-                    sys.stdout.write(f"claim_certificate_json: {self.claim_certificate_json}\n")
+                    screen_lines.append(f"claim_certificate_json: {self.claim_certificate_json}")
+            sys.stdout.write("\x1b[2J\x1b[H" + "\n".join(screen_lines))
             sys.stdout.flush()
             return
 

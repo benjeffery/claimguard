@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import shutil
 from pathlib import Path
 
 from claimguard.cli import HumanLiveRenderer, LLMStreamRenderer, main
@@ -272,3 +275,26 @@ def test_human_renderer_flask_frames_keep_fixed_size_across_animation() -> None:
         frame = renderer._flask_frame_lines()
         assert len(frame) == 5
         assert all(len(line) == 10 for line in frame)
+
+
+def test_human_renderer_tty_render_reserves_last_terminal_row(monkeypatch, capsys) -> None:
+    renderer = HumanLiveRenderer()
+    renderer.is_tty = True
+    renderer.use_color = False
+    renderer.flask_min_cols = 9999
+    renderer._alt_screen_active = True
+    renderer.task_count = 100
+    renderer.task_done = 50
+    renderer.pipeline = "p"
+    renderer.run_id = "r1"
+    renderer.rows = [
+        {"task": f"t{i}", "status": ("blocked" if i % 7 == 0 else "ok"), "cache_reason": "", "blocked_reason": "", "runtime_s": 1.0}
+        for i in range(120)
+    ]
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback=(120, 40): os.terminal_size((80, 20)))
+
+    renderer._render(final=False, event_type="task_stats")
+    out = capsys.readouterr().out
+    clean = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out)
+    assert len(clean.splitlines()) <= 18
+    assert not clean.endswith("\n")

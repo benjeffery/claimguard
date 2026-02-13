@@ -19,7 +19,7 @@
     "prepare_data",
     "publish_rank"
   ],
-  "created_utc": "2026-02-13T14:37:44Z",
+  "created_utc": "2026-02-13T14:57:44Z",
   "evidence": [
     {
       "blocked_reason": "",
@@ -120,7 +120,7 @@
     }
   ],
   "pipeline": "minimal_example",
-  "run_id": "run_20260213T143744Z_967b93ad",
+  "run_id": "run_20260213T145744Z_9d13ea6f",
   "target_task": "",
   "target_tasks": []
 }
