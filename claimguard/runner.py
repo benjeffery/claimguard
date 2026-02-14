@@ -1387,6 +1387,7 @@ class PipelineRunner:
                 event_emitter(event)
 
         run_id = _make_run_id()
+        run_started_t = float(time.perf_counter())
         self._cancel_event.clear()
         configured_workers = max_workers
         if configured_workers is None:
@@ -1687,6 +1688,34 @@ class PipelineRunner:
         claim_diagnostics = list(decision.diagnostics)
         claim_blocking_ready = all(rows[t].status in CERTIFIABLE_STATUSES for t in claim_blocking_tasks)
         target_ready = all(rows[t].status in CERTIFIABLE_STATUSES for t in claim_targets) if claim_targets else True
+        runtime_seconds = max(float(time.perf_counter()) - run_started_t, 0.0)
+        total_task_runtime = sum(max(float(r.runtime_seconds), 0.0) for r in rows.values())
+        top_runtime_tasks = [
+            {
+                "task": str(r.task),
+                "status": str(r.status),
+                "runtime_seconds": float(r.runtime_seconds),
+                "runtime_share": (
+                    float(r.runtime_seconds) / float(total_task_runtime) if float(total_task_runtime) > 0.0 else 0.0
+                ),
+            }
+            for r in sorted(rows.values(), key=lambda x: float(x.runtime_seconds), reverse=True)[:3]
+        ]
+        selected_reverse_deps: dict[str, list[str]] = {t: [] for t in selected_tasks}
+        for task_name in selected_tasks:
+            for dep_name in self.deps.get(task_name, []):
+                if dep_name in selected_tasks:
+                    selected_reverse_deps.setdefault(dep_name, []).append(task_name)
+        leaf_tasks = sorted(t for t in selected_tasks if not selected_reverse_deps.get(t))
+        leaf_task_rows = [
+            {
+                "task": t,
+                "status": rows[t].status if t in rows else "missing",
+                "cache_hit": bool(rows[t].cache_hit) if t in rows else False,
+                "runtime_seconds": float(rows[t].runtime_seconds) if t in rows else 0.0,
+            }
+            for t in leaf_tasks
+        ]
 
         row_list = [
             {
@@ -1713,6 +1742,7 @@ class PipelineRunner:
                 "task_count": len(selected_tasks),
                 "max_workers": configured_jobs,
                 "cpu_thread_budget": cpu_thread_budget,
+                "runtime_seconds": runtime_seconds,
                 "rng_policy": self._rng_policy,
                 "rng_seed_base": self._rng_seed_base,
                 "cache_hits": sum(1 for r in rows.values() if r.cache_hit),
@@ -1811,8 +1841,10 @@ class PipelineRunner:
                 "claim_class": claim_class,
                 "claim_reason": claim_reason,
                 "report_json": str((self.report_root / "run_report_latest.json").resolve()),
-                "claim_certificate_json": str((self.report_root / "claim_certificate_latest.json").resolve()),
-                "summary": dict(report["summary"]),
-            }
-        )
+                    "claim_certificate_json": str((self.report_root / "claim_certificate_latest.json").resolve()),
+                    "summary": dict(report["summary"]),
+                    "top_runtime_tasks": top_runtime_tasks,
+                    "leaf_tasks": leaf_task_rows,
+                }
+            )
         return report

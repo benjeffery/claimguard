@@ -40,6 +40,9 @@ class HumanLiveRenderer:
         self.report_json = ""
         self.claim_certificate_json = ""
         self.claim_class = ""
+        self.total_runtime_s = 0.0
+        self.top_runtime_tasks: list[dict[str, Any]] = []
+        self.leaf_tasks: list[dict[str, Any]] = []
         self._last_tty_render_t = 0.0
         self._render_tick = 0
         self._alt_screen_active = False
@@ -155,6 +158,10 @@ class HumanLiveRenderer:
             self.claim_class = str(event.get("claim_class", ""))
             self.report_json = str(event.get("report_json", ""))
             self.claim_certificate_json = str(event.get("claim_certificate_json", ""))
+            top_runtime = event.get("top_runtime_tasks", [])
+            self.top_runtime_tasks = list(top_runtime) if isinstance(top_runtime, list) else []
+            leaf_tasks = event.get("leaf_tasks", [])
+            self.leaf_tasks = list(leaf_tasks) if isinstance(leaf_tasks, list) else []
             summary = event.get("summary", {})
             if isinstance(summary, dict):
                 counts = summary.get("task_status_counts", {})
@@ -162,6 +169,7 @@ class HumanLiveRenderer:
                     for k in self.status_counts:
                         if k in counts:
                             self.status_counts[k] = int(counts[k])
+                self.total_runtime_s = float(summary.get("runtime_seconds", 0.0) or 0.0)
         final = et == "run_end"
         if self.is_tty and not final and et in {"task_stats", "map_progress", "task_progress"}:
             now = float(time.perf_counter())
@@ -181,11 +189,7 @@ class HumanLiveRenderer:
             sys.stdout.flush()
             self._alt_screen_active = False
         if self._saw_run_end:
-            print(f"claim_class: {self.claim_class}")
-            if self.report_json:
-                print(f"report_json: {self.report_json}")
-            if self.claim_certificate_json:
-                print(f"claim_certificate_json: {self.claim_certificate_json}")
+            self._print_human_run_summary()
 
     def _detect_color(self) -> bool:
         if not self.is_tty:
@@ -643,12 +647,7 @@ class HumanLiveRenderer:
             return
 
         if final:
-            print(
-                f"[run_end] claim_class={self.claim_class} "
-                f"done={self.task_done}/{self.task_count} elapsed={elapsed:.1f}s "
-                f"report={self.report_json} cert={self.claim_certificate_json}",
-                flush=True,
-            )
+            self._print_human_run_summary()
             return
         if event_type == "task_start":
             print(
@@ -668,6 +667,45 @@ class HumanLiveRenderer:
                 f"[task_end] {row['task']} status={row['status']} t={row['runtime_s']:.3f}s{note}",
                 flush=True,
             )
+
+    def _print_human_run_summary(self) -> None:
+        runtime_s = float(self.total_runtime_s) if self.total_runtime_s > 0.0 else max(time.perf_counter() - self.run_t0, 0.0)
+        print(
+            f"run complete: pipeline={self.pipeline or '-'} run_id={self.run_id or '-'} "
+            f"done={self.task_done}/{self.task_count} runtime={runtime_s:.3f}s",
+            flush=True,
+        )
+        print(
+            "status_counts: "
+            f"ok={self.status_counts['ok']} "
+            f"replay={self.status_counts['replay_ok']} "
+            f"diag={self.status_counts['diagnostic_only']} "
+            f"blocked={self.status_counts['blocked']}",
+            flush=True,
+        )
+        print(f"claim_class: {self.claim_class}", flush=True)
+        if self.top_runtime_tasks:
+            print("top_runtime_tasks:", flush=True)
+            for idx, row in enumerate(self.top_runtime_tasks[:3], start=1):
+                task = str(row.get("task", ""))
+                status = str(row.get("status", ""))
+                task_runtime_s = float(row.get("runtime_seconds", 0.0) or 0.0)
+                share = min(max(float(row.get("runtime_share", 0.0) or 0.0), 0.0), 1.0)
+                print(
+                    f"  {idx}. {task} status={status} runtime={task_runtime_s:.3f}s share={share * 100.0:.1f}%",
+                    flush=True,
+                )
+        if self.leaf_tasks:
+            print("leaf_tasks:", flush=True)
+            for row in self.leaf_tasks:
+                task = str(row.get("task", ""))
+                status = str(row.get("status", ""))
+                task_runtime_s = float(row.get("runtime_seconds", 0.0) or 0.0)
+                print(f"  - {task}: {status} ({task_runtime_s:.3f}s)", flush=True)
+        if self.report_json:
+            print(f"report_json: {self.report_json}", flush=True)
+        if self.claim_certificate_json:
+            print(f"claim_certificate_json: {self.claim_certificate_json}", flush=True)
 
 
 class LLMStreamRenderer:

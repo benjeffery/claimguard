@@ -102,7 +102,9 @@ def test_cli_run_defaults_to_human_output(capsys) -> None:
     out = capsys.readouterr().out
     assert "[task_start]" in out
     assert "[task_end]" in out
-    assert "[run_end]" in out
+    assert "run complete:" in out
+    assert "top_runtime_tasks:" in out
+    assert "leaf_tasks:" in out
 
 
 def test_llm_renderer_includes_map_progress_in_task_summary() -> None:
@@ -200,6 +202,44 @@ def test_human_renderer_tracks_current_task_stats_and_map_progress(capsys) -> No
         "phase": "fit",
         "message": "epoch 4",
     }
+
+
+def test_human_renderer_run_end_prints_helpful_summary(capsys) -> None:
+    renderer = HumanLiveRenderer()
+    renderer.is_tty = False
+    renderer.emit({"event": "run_start", "run_id": "r1", "task_count": 3, "pipeline": "p"})
+    capsys.readouterr()
+    renderer.emit(
+        {
+            "event": "run_end",
+            "run_id": "r1",
+            "claim_class": "contract-certified",
+            "report_json": "/tmp/report.json",
+            "claim_certificate_json": "/tmp/cert.json",
+            "summary": {
+                "runtime_seconds": 12.5,
+                "task_status_counts": {"ok": 2, "replay_ok": 1, "diagnostic_only": 0, "blocked": 0},
+            },
+            "top_runtime_tasks": [
+                {"task": "a", "status": "ok", "runtime_seconds": 6.0, "runtime_share": 0.6},
+                {"task": "b", "status": "ok", "runtime_seconds": 3.0, "runtime_share": 0.3},
+            ],
+            "leaf_tasks": [
+                {"task": "publish", "status": "ok", "runtime_seconds": 1.2},
+                {"task": "diagnostic", "status": "diagnostic_only", "runtime_seconds": 0.8},
+            ],
+        }
+    )
+    out = capsys.readouterr().out
+    assert "run complete: pipeline=p run_id=r1 done=0/3 runtime=12.500s" in out
+    assert "status_counts: ok=2 replay=1 diag=0 blocked=0" in out
+    assert "top_runtime_tasks:" in out
+    assert "1. a status=ok runtime=6.000s share=60.0%" in out
+    assert "leaf_tasks:" in out
+    assert "- publish: ok (1.200s)" in out
+    assert "claim_class: contract-certified" in out
+    assert "report_json: /tmp/report.json" in out
+    assert "claim_certificate_json: /tmp/cert.json" in out
 
 
 def test_human_renderer_recent_rows_returns_unused_non_ok_space() -> None:

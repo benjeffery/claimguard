@@ -125,6 +125,7 @@ Use either entrypoint:
 
 CLI output modes:
 - default: human-friendly live status (TTY redraw, line-mode fallback for logs)
+  - end-of-run summary includes total runtime, top runtime-share tasks, and leaf-task statuses
 - `--llm-output`: NDJSON event stream (`run_start` / periodic `task_summary` / `run_end`)
   - `task_summary` fields: `current_task`, `task_started`, `task_done`, `task_left`, `task_running`
   - when a task emits progress, `task_summary` includes `current_task_progress` (`done`/`total`/`fraction` + optional `phase`/`message`)
