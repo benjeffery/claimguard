@@ -5,8 +5,10 @@ import os
 import re
 import shutil
 from pathlib import Path
+from typing import Any
 
 from claimguard.cli import HumanLiveRenderer, LLMStreamRenderer, main
+from claimguard import cli as cli_module
 
 
 def test_cli_report_and_doctor_commands(capsys) -> None:
@@ -46,6 +48,40 @@ def test_cli_doctor_graphviz_outputs_dot(capsys) -> None:
     assert '"prepare_data" -> "fit_model";' in out
     assert '"fit_model" -> "publish_rank";' in out
     assert '"fit_model" -> "diagnostic_probe";' in out
+
+
+def test_cli_doctor_graphviz_outputs_png(tmp_path, monkeypatch, capsys) -> None:
+    contract = Path("examples/minimal-example/claimguard.json").resolve()
+    assert contract.exists()
+
+    out_png = tmp_path / "graph.png"
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_dot_which(_: str) -> str:
+        return "dot"
+
+    def fake_run(cmd: list[str], input: str, text: bool, capture_output: bool, check: bool = False) -> Any:
+        assert cmd[:1] == ["dot"]
+        output_index = cmd.index("-o")
+        out_path = Path(cmd[output_index + 1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"png")
+        return FakeCompleted()
+
+    monkeypatch.setattr(cli_module.shutil, "which", fake_dot_which)
+    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+
+    rc = main(["doctor", "--contract", str(contract), "--png", str(out_png)])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert str(out_png.resolve()) in out
+    assert out_png.exists()
+    assert out_png.read_bytes() == b"png"
 
 
 def test_cli_doctor_audit_inputs_lists_root_inputs(capsys) -> None:

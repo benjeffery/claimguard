@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import os
 import shutil
 import sys
@@ -841,6 +842,38 @@ class LLMStreamRenderer:
             return
 
 
+def _safe_graph_name(raw: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in raw)
+    cleaned = cleaned.strip("._-")
+    return cleaned or "claimguard"
+
+
+def _write_graphviz_png(dot_text: str, *, output_png: Path) -> None:
+    dot_executable = shutil.which("dot")
+    if not dot_executable:
+        raise SystemExit("graphviz `dot` executable not found; install Graphviz or use --graphviz for DOT output")
+
+    output_png = output_png.resolve()
+    output_png.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        proc = subprocess.run(
+            [dot_executable, "-Tpng", "-o", str(output_png)],
+            input=dot_text,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        raise SystemExit("graphviz `dot` executable not found; install Graphviz or use --graphviz for DOT output")
+
+    if proc.returncode != 0:
+        err = str(proc.stderr or proc.stdout or "").strip()
+        if not err:
+            err = f"graphviz dot returned exit code {proc.returncode}"
+        raise SystemExit(f"failed to render graphviz PNG: {err}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="claimguard")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -874,6 +907,13 @@ def main(argv: list[str] | None = None) -> int:
     doctor_p.add_argument("--contract", type=Path, default=DEFAULT_CONTRACT)
     doctor_mode = doctor_p.add_mutually_exclusive_group()
     doctor_mode.add_argument("--graphviz", action="store_true", help="Print task DAG in Graphviz DOT format")
+    doctor_mode.add_argument(
+        "--png",
+        nargs="?",
+        const="",
+        default=None,
+        help="Render task DAG as PNG (optional path). If omitted, writes <workspace>/.claimguard/graphviz/<pipeline>.png",
+    )
     doctor_mode.add_argument(
         "--audit-inputs",
         action="store_true",
@@ -944,6 +984,18 @@ def main(argv: list[str] | None = None) -> int:
         runner = PipelineRunner(args.contract)
         if args.graphviz:
             sys.stdout.write(graphviz_dot(runner.task_specs, runner.deps, graph_name=str(runner.contract.get("pipeline_name", "claimguard"))))
+            return 0
+        if args.png is not None:
+            graph_name = str(runner.contract.get("pipeline_name", "claimguard"))
+            default_png = runner.state_root / "graphviz" / f"{_safe_graph_name(graph_name)}.png"
+            target = Path(args.png) if str(args.png).strip() else default_png
+            dot_source = graphviz_dot(
+                runner.task_specs,
+                runner.deps,
+                graph_name=graph_name,
+            )
+            _write_graphviz_png(dot_source, output_png=target)
+            print(target.resolve())
             return 0
         if args.audit_inputs:
             produced = {out for spec in runner.task_specs.values() for out in spec.outputs}
