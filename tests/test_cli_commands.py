@@ -353,6 +353,24 @@ def test_human_renderer_flask_frames_keep_fixed_size_across_animation() -> None:
         assert all(len(line) == 10 for line in frame)
 
 
+def test_human_renderer_flask_bubbles_rise() -> None:
+    renderer = HumanLiveRenderer()
+    # Lane with offset=0 should move from row 3 -> 2 -> 1 -> 0 at fixed column 4 near the neck.
+    renderer._render_tick = 0
+    frame0 = renderer._flask_frame_lines()
+    renderer._render_tick = 1
+    frame1 = renderer._flask_frame_lines()
+    renderer._render_tick = 2
+    frame2 = renderer._flask_frame_lines()
+    renderer._render_tick = 3
+    frame3 = renderer._flask_frame_lines()
+
+    assert frame0[3][2] in {"o", "O", "*", "."}
+    assert frame1[2][3] in {"o", "O", "*", "."}
+    assert frame2[1][4] in {"o", "O", "*", "."}
+    assert frame3[0][4] in {"o", "O", "*", "."}
+
+
 def test_human_renderer_tty_render_reserves_last_terminal_row(monkeypatch, capsys) -> None:
     renderer = HumanLiveRenderer()
     renderer.is_tty = True

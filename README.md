@@ -110,6 +110,7 @@ Repository layout:
 - `docs/`: LLM-focused guides and copy-paste examples
 - `examples/minimal-example/`: clean baseline example for MVP runtime
 - `examples/all-features-example/`: canonical advanced example exercising all major runtime features
+- `examples/genomics-trio-cert/`: genomics-flavored trio certification example with map fanout + diagnostics
 - `templates/AGENTS.md`: starter guidance for coding agents in claimguard-managed projects
 
 Docs:

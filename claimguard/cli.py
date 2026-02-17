@@ -318,52 +318,32 @@ class HumanLiveRenderer:
         return selected[:limit]
 
     def _flask_frame_lines(self) -> list[str]:
-        frames = [
-            [
-                "   │  │   ",
-                "  / .  \\  ",
-                " /  o   \\ ",
-                "/~o~~O~~~\\",
-                "└────────┘",
-            ],
-            [
-                "   │ .│   ",
-                "  /  o \\  ",
-                " / .   O\\ ",
-                "/~~o~*~~O\\",
-                "└────────┘",
-            ],
-            [
-                "   │o │   ",
-                "  / .  \\  ",
-                " /  O . \\ ",
-                "/~*~~o~~O\\",
-                "└────────┘",
-            ],
-            [
-                "   │ o│   ",
-                "  / O. \\  ",
-                " / . o  \\ ",
-                "/~~O~~o*~\\",
-                "└────────┘",
-            ],
-            [
-                "   │ .│   ",
-                "  /  O \\  ",
-                " / o   .\\ ",
-                "/~o*~~O~~\\",
-                "└────────┘",
-            ],
-            [
-                "   │o │   ",
-                "  / .o \\  ",
-                " /  . O \\ ",
-                "/~~O~*~~o\\",
-                "└────────┘",
-            ],
+        canvas = [
+            list("   │  │   "),
+            list("  /    \\  "),
+            list(" /      \\ "),
+            list("/~~~~~~~~\\"),
+            list("└────────┘"),
         ]
-        idx = (self._render_tick // 2) % len(frames)
-        return frames[idx]
+
+        # Bubble lanes rise from liquid level (row 3) to neck (row 0), then pause.
+        cycle_len = 12
+        bubble_lanes = [
+            {"offset": 0, "x": {3: 2, 2: 3, 1: 4, 0: 4}, "chars": "oO*."},
+            {"offset": 4, "x": {3: 5, 2: 5, 1: 5, 0: 5}, "chars": ".oO*"},
+            {"offset": 8, "x": {3: 7, 2: 6, 1: 5, 0: 5}, "chars": "*.oO"},
+        ]
+        tick = int(self._render_tick)
+        for lane in bubble_lanes:
+            phase = (tick + int(lane["offset"])) % cycle_len
+            if phase >= 4:
+                continue
+            row = 3 - phase
+            col = int(lane["x"][row])
+            glyphs = str(lane["chars"])
+            canvas[row][col] = glyphs[(tick + phase) % len(glyphs)]
+
+        return ["".join(row) for row in canvas]
 
     def _colorize_flask_line(self, line: str, *, row: int) -> str:
         if not self.use_color:
