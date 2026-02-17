@@ -4,19 +4,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "artifacts/prepare_data/interface.json"
-    ],
-    "outputs": [
-        "artifacts/blocked_probe/interface.json"
-    ],
-    "interface_output": "artifacts/blocked_probe/interface.json",
-    "claim_blocking": False,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"}
-    ]
-}
+CG_TASK = {'inputs': {'in_interface': 'artifacts/prepare_data/interface.json'},
+ 'outputs': {'interface': 'artifacts/blocked_probe/interface.json'},
+ 'interface_output': 'interface',
+ 'claim_blocking': False,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"}]}
 
 
 def main() -> int:

@@ -21,10 +21,11 @@ def _make_task(
     resources: dict[str, object] | None = None,
     extra_lines: list[str] | None = None,
 ) -> str:
+    input_map = {f"in{i + 1}": rel for i, rel in enumerate(inputs or [])}
     spec: dict[str, object] = {
-        "inputs": list(inputs or []),
-        "outputs": [output_rel],
-        "interface_output": output_rel,
+        "inputs": input_map,
+        "outputs": {"interface": output_rel},
+        "interface_output": "interface",
         "gates": [],
     }
     if resources is not None:

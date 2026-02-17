@@ -5,20 +5,12 @@ import json
 import subprocess
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "artifacts/fit_model/interface.json"
-    ],
-    "outputs": [
-        "artifacts/subprocess_probe/interface.json"
-    ],
-    "interface_output": "artifacts/subprocess_probe/interface.json",
-    "claim_blocking": False,
-    "allow_subprocess": True,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"}
-    ]
-}
+CG_TASK = {'inputs': {'in_interface': 'artifacts/fit_model/interface.json'},
+ 'outputs': {'interface': 'artifacts/subprocess_probe/interface.json'},
+ 'interface_output': 'interface',
+ 'claim_blocking': False,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"}],
+ 'allow_subprocess': True}
 
 
 def main() -> int:

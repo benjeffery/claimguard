@@ -29,9 +29,9 @@ def test_terminate_process_kills_process_group(tmp_path: Path) -> None:
         "\n".join(
             [
                 "CG_TASK = {",
-                "    'inputs': [],",
-                "    'outputs': ['artifacts/a/interface.json'],",
-                "    'interface_output': 'artifacts/a/interface.json',",
+                "    'inputs': {},",
+                "    'outputs': {'interface': 'artifacts/a/interface.json'},",
+                "    'interface_output': 'interface',",
                 "}",
             ]
         )

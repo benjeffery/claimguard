@@ -14,6 +14,7 @@ def _write(path: Path, text: str) -> None:
 
 
 def _write_task(workspace: Path, cg_task: dict, body_lines: list[str]) -> None:
+    cg_task = dict(cg_task)
     lines = [
         f"CG_TASK = {repr(cg_task)}",
         "from pathlib import Path",
@@ -66,12 +67,10 @@ def test_old_gate_dsl_is_rejected(tmp_path: Path) -> None:
 
     _write_task(
         ws,
-        {
-            "inputs": ["inputs/in.txt"],
-            "outputs": ["artifacts/interface.json"],
-            "interface_output": "artifacts/interface.json",
-            "gates": [{"name": "status_ok", "path": "status", "equals": "ok"}],
-        },
+        {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': [{'name': 'status_ok', 'path': 'status', 'equals': 'ok'}]},
         [
             "root = Path.cwd()",
             "(root / 'artifacts').mkdir(parents=True, exist_ok=True)",
@@ -94,12 +93,10 @@ def test_gate_expr_must_return_bool(tmp_path: Path) -> None:
 
     _write_task(
         ws,
-        {
-            "inputs": ["inputs/in.txt"],
-            "outputs": ["artifacts/interface.json"],
-            "interface_output": "artifacts/interface.json",
-            "gates": [{"name": "status_truthy", "expr": "interface['status']"}],
-        },
+        {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': [{'name': 'status_truthy', 'expr': "interface['status']"}]},
         [
             "root = Path.cwd()",
             "(root / 'artifacts').mkdir(parents=True, exist_ok=True)",
@@ -155,12 +152,10 @@ def test_task_paths_disallow_parent_traversal_and_absolute(tmp_path: Path) -> No
 
     _write_task(
         ws,
-        {
-            "inputs": ["inputs/in.txt"],
-            "outputs": ["../artifacts/interface.json"],
-            "interface_output": "../artifacts/interface.json",
-            "gates": [],
-        },
+        {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'interface': '../artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []},
         [
             "root = Path.cwd()",
             "(root / 'artifacts').mkdir(parents=True, exist_ok=True)",
@@ -172,12 +167,10 @@ def test_task_paths_disallow_parent_traversal_and_absolute(tmp_path: Path) -> No
 
     _write_task(
         ws,
-        {
-            "inputs": ["inputs/in.txt"],
-            "outputs": ["/tmp/claimguard_bad/interface.json"],
-            "interface_output": "/tmp/claimguard_bad/interface.json",
-            "gates": [],
-        },
+        {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'interface': '/tmp/claimguard_bad/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []},
         [
             "root = Path.cwd()",
             "(root / 'artifacts').mkdir(parents=True, exist_ok=True)",

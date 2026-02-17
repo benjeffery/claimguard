@@ -5,19 +5,11 @@ import json
 import random
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "artifacts/fit_model/interface.json"
-    ],
-    "outputs": [
-        "artifacts/rng_probe_blocked/interface.json"
-    ],
-    "interface_output": "artifacts/rng_probe_blocked/interface.json",
-    "claim_blocking": False,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"}
-    ]
-}
+CG_TASK = {'inputs': {'in_interface': 'artifacts/fit_model/interface.json'},
+ 'outputs': {'interface': 'artifacts/rng_probe_blocked/interface.json'},
+ 'interface_output': 'interface',
+ 'claim_blocking': False,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"}]}
 
 
 def main() -> int:

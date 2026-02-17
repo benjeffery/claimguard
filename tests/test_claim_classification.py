@@ -14,9 +14,9 @@ def _write(path: Path, text: str) -> None:
 
 def _write_task(workspace: Path, *, name: str, status: str, claim_blocking: bool) -> None:
     cg_task = {
-        "inputs": [],
-        "outputs": [f"artifacts/{name}/interface.json"],
-        "interface_output": f"artifacts/{name}/interface.json",
+        "inputs": {},
+        "outputs": {"interface": f"artifacts/{name}/interface.json"},
+        "interface_output": "interface",
         "claim_blocking": claim_blocking,
         "gates": [],
     }

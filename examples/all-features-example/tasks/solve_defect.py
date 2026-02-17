@@ -5,26 +5,14 @@ import json
 import os
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "artifacts/defect_manifest/manifest.json",
-        "artifacts/fit_model/interface.json"
-    ],
-    "outputs": [
-        "artifacts/defect_solve/{map_index}_{map_key}_{map_hash}/interface.json",
-        "artifacts/defect_solve/{map_index}_{map_key}_{map_hash}/summary.md"
-    ],
-    "interface_output": "artifacts/defect_solve/{map_index}_{map_key}_{map_hash}/interface.json",
-    "claim_blocking": False,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"}
-    ],
-    "map": {
-        "items_input": "artifacts/defect_manifest/manifest.json",
-        "items_path": "defects",
-        "item_name_field": "defect_id"
-    }
-}
+CG_TASK = {'inputs': {'manifest': 'artifacts/defect_manifest/manifest.json',
+            'in_interface': 'artifacts/fit_model/interface.json'},
+ 'outputs': {'interface': 'artifacts/defect_solve/{map_index}_{map_key}_{map_hash}/interface.json',
+             'summary': 'artifacts/defect_solve/{map_index}_{map_key}_{map_hash}/summary.md'},
+ 'interface_output': 'interface',
+ 'claim_blocking': False,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"}],
+ 'map': {'items_input': 'manifest', 'items_path': 'defects', 'item_name_field': 'defect_id'}}
 
 
 def main() -> int:

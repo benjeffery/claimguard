@@ -6,23 +6,15 @@ import os
 import random
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "artifacts/prepare_data/payload.json",
-        "inputs/fit_config.json"
-    ],
-    "outputs": [
-        "artifacts/bootstrap_model/payload.json",
-        "artifacts/bootstrap_model/interface.json",
-        "artifacts/bootstrap_model/summary.md"
-    ],
-    "interface_output": "artifacts/bootstrap_model/interface.json",
-    "claim_blocking": True,
-    "allow_rng": True,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"}
-    ]
-}
+CG_TASK = {'inputs': {'fit_config': 'inputs/fit_config.json',
+            'in_payload': 'artifacts/prepare_data/payload.json'},
+ 'outputs': {'payload': 'artifacts/bootstrap_model/payload.json',
+             'interface': 'artifacts/bootstrap_model/interface.json',
+             'summary': 'artifacts/bootstrap_model/summary.md'},
+ 'interface_output': 'interface',
+ 'claim_blocking': True,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"}],
+ 'allow_rng': True}
 
 
 def _task_params() -> dict[str, float]:

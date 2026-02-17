@@ -12,6 +12,7 @@ def _write(path: Path, text: str) -> None:
 
 
 def _write_task_script(workspace: Path, cg_task: dict, body_lines: list[str]) -> None:
+    cg_task = dict(cg_task)
     lines = [
         f"CG_TASK = {repr(cg_task)}",
         "from pathlib import Path",
@@ -49,12 +50,10 @@ def test_io_enforcement_blocks_undeclared_read(tmp_path: Path) -> None:
     _write(ws / "inputs/secret.txt", "secret\n")
     contract_path = _single_task_contract(ws)
 
-    cg_task = {
-        "inputs": ["inputs/in.txt"],
-        "outputs": ["artifacts/out.txt", "artifacts/interface.json"],
-        "interface_output": "artifacts/interface.json",
-        "gates": [],
-    }
+    cg_task = {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'out': 'artifacts/out.txt', 'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []}
     _write_task_script(
         ws,
         cg_task,
@@ -81,12 +80,10 @@ def test_io_enforcement_blocks_undeclared_write(tmp_path: Path) -> None:
     _write(ws / "inputs/in.txt", "in\n")
     contract_path = _single_task_contract(ws)
 
-    cg_task = {
-        "inputs": ["inputs/in.txt"],
-        "outputs": ["artifacts/out.txt", "artifacts/interface.json"],
-        "interface_output": "artifacts/interface.json",
-        "gates": [],
-    }
+    cg_task = {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'out': 'artifacts/out.txt', 'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []}
     _write_task_script(
         ws,
         cg_task,
@@ -114,13 +111,11 @@ def test_io_enforcement_allows_declared_read_exemption(tmp_path: Path) -> None:
     _write(ws / "inputs/secret.txt", "secret\n")
     contract_path = _single_task_contract(ws)
 
-    cg_task = {
-        "inputs": ["inputs/in.txt"],
-        "read_exemptions": ["inputs/secret.txt"],
-        "outputs": ["artifacts/out.txt", "artifacts/interface.json"],
-        "interface_output": "artifacts/interface.json",
-        "gates": [],
-    }
+    cg_task = {'inputs': {'in': 'inputs/in.txt'},
+ 'read_exemptions': ['inputs/secret.txt'],
+ 'outputs': {'out': 'artifacts/out.txt', 'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []}
     _write_task_script(
         ws,
         cg_task,
@@ -147,12 +142,10 @@ def test_io_enforcement_blocks___file___workspace_read_bypass(tmp_path: Path) ->
     _write(ws / "inputs/secret.txt", "secret\n")
     contract_path = _single_task_contract(ws)
 
-    cg_task = {
-        "inputs": ["inputs/in.txt"],
-        "outputs": ["artifacts/interface.json"],
-        "interface_output": "artifacts/interface.json",
-        "gates": [],
-    }
+    cg_task = {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []}
     _write_task_script(
         ws,
         cg_task,
@@ -178,12 +171,10 @@ def test_io_enforcement_blocks___file___workspace_write_bypass(tmp_path: Path) -
     _write(ws / "inputs/in.txt", "in\n")
     contract_path = _single_task_contract(ws)
 
-    cg_task = {
-        "inputs": ["inputs/in.txt"],
-        "outputs": ["artifacts/interface.json"],
-        "interface_output": "artifacts/interface.json",
-        "gates": [],
-    }
+    cg_task = {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []}
     _write_task_script(
         ws,
         cg_task,
@@ -210,12 +201,10 @@ def test_directory_inputs_are_forbidden(tmp_path: Path) -> None:
     _write(ws / "inputs/dir/file.txt", "x\n")
     contract_path = _single_task_contract(ws)
 
-    cg_task = {
-        "inputs": ["inputs/dir"],
-        "outputs": ["artifacts/interface.json"],
-        "interface_output": "artifacts/interface.json",
-        "gates": [],
-    }
+    cg_task = {'inputs': {'dir': 'inputs/dir'},
+ 'outputs': {'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []}
     _write_task_script(
         ws,
         cg_task,

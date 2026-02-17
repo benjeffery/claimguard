@@ -23,12 +23,10 @@ def test_blocked_upstream_marks_skip_reason(tmp_path: Path) -> None:
     }
     _write(ws / "claimguard.json", json.dumps(contract, indent=2) + "\n")
 
-    first_spec = {
-        "inputs": ["inputs/in.txt"],
-        "outputs": ["artifacts/first/out.txt", "artifacts/first/interface.json"],
-        "interface_output": "artifacts/first/interface.json",
-        "gates": [],
-    }
+    first_spec = {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'out': 'artifacts/first/out.txt', 'interface': 'artifacts/first/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []}
     _write(
         ws / "tasks/first.py",
         "\n".join(
@@ -45,12 +43,10 @@ def test_blocked_upstream_marks_skip_reason(tmp_path: Path) -> None:
         ),
     )
 
-    second_spec = {
-        "inputs": ["artifacts/first/interface.json"],
-        "outputs": ["artifacts/second/interface.json"],
-        "interface_output": "artifacts/second/interface.json",
-        "gates": [],
-    }
+    second_spec = {'inputs': {'in_interface': 'artifacts/first/interface.json'},
+ 'outputs': {'interface': 'artifacts/second/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []}
     _write(
         ws / "tasks/second.py",
         "\n".join(

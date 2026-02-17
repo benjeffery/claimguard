@@ -29,13 +29,10 @@ def test_rng_strict_blocks_unapproved_usage(tmp_path: Path) -> None:
     ws.mkdir(parents=True, exist_ok=True)
     _write(ws / "inputs/in.txt", "in\n")
     contract = _contract(ws, policy="strict", seed=123)
-    spec = {
-        "inputs": ["inputs/in.txt"],
-        "outputs": ["artifacts/interface.json"],
-        "interface_output": "artifacts/interface.json",
-        "gates": [],
-        # allow_rng omitted -> False
-    }
+    spec = {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': []}
     _write(
         ws / "tasks/task.py",
         "\n".join(
@@ -68,13 +65,11 @@ def test_rng_strict_allow_rng_is_deterministic(tmp_path: Path) -> None:
     ws.mkdir(parents=True, exist_ok=True)
     _write(ws / "inputs/in.txt", "in\n")
     contract = _contract(ws, policy="strict", seed=123)
-    spec = {
-        "inputs": ["inputs/in.txt"],
-        "outputs": ["artifacts/interface.json"],
-        "interface_output": "artifacts/interface.json",
-        "gates": [],
-        "allow_rng": True,
-    }
+    spec = {'inputs': {'in': 'inputs/in.txt'},
+ 'outputs': {'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': [],
+ 'allow_rng': True}
     _write(
         ws / "tasks/task.py",
         "\n".join(

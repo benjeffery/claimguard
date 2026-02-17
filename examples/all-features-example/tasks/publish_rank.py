@@ -4,24 +4,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "artifacts/fit_model/interface.json",
-        "artifacts/feature_stats/interface.json"
-    ],
-    "outputs": [
-        "artifacts/publish_rank/ranking.json",
-        "artifacts/publish_rank/interface.json",
-        "artifacts/publish_rank/summary.md"
-    ],
-    "interface_output": "artifacts/publish_rank/interface.json",
-    "claim_blocking": True,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"},
-        {"name": "stability_gate", "expr": "interface['classification']['strict_stability_class'] == 'strict'"},
-        {"name": "primitive_allowlist", "expr": "interface['classification']['primitive_class'] in ['core', 'derived']"}
-    ]
-}
+CG_TASK = {'inputs': {'interface_2': 'artifacts/feature_stats/interface.json',
+            'in_interface': 'artifacts/fit_model/interface.json'},
+ 'outputs': {'ranking': 'artifacts/publish_rank/ranking.json',
+             'interface': 'artifacts/publish_rank/interface.json',
+             'summary': 'artifacts/publish_rank/summary.md'},
+ 'interface_output': 'interface',
+ 'claim_blocking': True,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"},
+           {'name': 'stability_gate',
+            'expr': "interface['classification']['strict_stability_class'] == 'strict'"},
+           {'name': 'primitive_allowlist',
+            'expr': "interface['classification']['primitive_class'] in ['core', 'derived']"}]}
 
 
 def main() -> int:

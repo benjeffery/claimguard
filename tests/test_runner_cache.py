@@ -26,9 +26,9 @@ def _make_workspace(tmp_path: Path) -> Path:
         "\n".join(
             [
                 "CG_TASK = {",
-                '  "inputs": ["inputs/in.txt"],',
-                '  "outputs": ["artifacts/out.txt", "artifacts/interface.json"],',
-                '  "interface_output": "artifacts/interface.json",',
+                '  "inputs": {"in": "inputs/in.txt"},',
+                '  "outputs": {"out": "artifacts/out.txt", "interface": "artifacts/interface.json"},',
+                '  "interface_output": "interface",',
                 '  "gates": [],',
                 "}",
                 "import helper",

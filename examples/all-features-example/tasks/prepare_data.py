@@ -5,29 +5,17 @@ import csv
 import json
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "inputs/raw_measurements.csv",
-        "inputs/fit_config.json"
-    ],
-    "read_exemptions": [
-        "inputs/exempt_reference.txt"
-    ],
-    "outputs": [
-        "artifacts/prepare_data/payload.json",
-        "artifacts/prepare_data/interface.json",
-        "artifacts/prepare_data/summary.md"
-    ],
-    "write_exemptions": [
-        "logs/prepare_data.trace.log"
-    ],
-    "interface_output": "artifacts/prepare_data/interface.json",
-    "claim_blocking": True,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"},
-        {"name": "row_count_positive", "expr": "interface['metrics']['row_count'] > 0"}
-    ]
-}
+CG_TASK = {'inputs': {'raw_measurements': 'inputs/raw_measurements.csv',
+            'fit_config': 'inputs/fit_config.json'},
+ 'outputs': {'payload': 'artifacts/prepare_data/payload.json',
+             'interface': 'artifacts/prepare_data/interface.json',
+             'summary': 'artifacts/prepare_data/summary.md'},
+ 'read_exemptions': ['inputs/exempt_reference.txt'],
+ 'write_exemptions': ['logs/prepare_data.trace.log'],
+ 'interface_output': 'interface',
+ 'claim_blocking': True,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"},
+           {'name': 'row_count_positive', 'expr': "interface['metrics']['row_count'] > 0"}]}
 
 
 def main() -> int:

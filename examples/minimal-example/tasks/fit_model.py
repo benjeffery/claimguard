@@ -7,22 +7,14 @@ import json
 import os
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "artifacts/prepare_data/payload.json",
-        "artifacts/prepare_data/interface.json",
-        "inputs/fit_config.json",
-    ],
-    "outputs": [
-        "artifacts/fit_model/model.json",
-        "artifacts/fit_model/interface.json",
-    ],
-    "interface_output": "artifacts/fit_model/interface.json",
-    "claim_blocking": True,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"}
-    ]
-}
+CG_TASK = {'inputs': {'payload': 'artifacts/prepare_data/payload.json',
+            'fit_config': 'inputs/fit_config.json',
+            'in_interface': 'artifacts/prepare_data/interface.json'},
+ 'outputs': {'model': 'artifacts/fit_model/model.json',
+             'interface': 'artifacts/fit_model/interface.json'},
+ 'interface_output': 'interface',
+ 'claim_blocking': True,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"}]}
 
 
 def _load_task_params() -> dict[str, float]:

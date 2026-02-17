@@ -877,6 +877,7 @@ class PipelineRunner:
         self._prepare_stage_workspace(spec, stage_root)
         tmp_dir.mkdir(parents=True, exist_ok=True)
         params_json = json.dumps(spec.params, sort_keys=True)
+        task_paths_json = json.dumps(dict(spec.task_paths), sort_keys=True)
         env = os.environ.copy()
         package_root = str(Path(__file__).resolve().parent.parent)
         py_path = env.get("PYTHONPATH", "")
@@ -899,6 +900,7 @@ class PipelineRunner:
                 "CG_WORKSPACE_ROOT": str(self.workspace_root.resolve()),
                 "CG_TASK_NAME": spec.name,
                 "CG_TASK_PARAMS_JSON": params_json,
+                "CG_TASK_PATHS_JSON": task_paths_json,
                 "CG_CPU_THREADS": str(alloc_threads),
                 "CG_PROGRESS_MIN_INTERVAL_S": "0.2",
                 "CG_ENFORCE_IO": "1",
@@ -1235,6 +1237,10 @@ class PipelineRunner:
                 allow_rng=spec.allow_rng,
                 map_config=None,
                 resources={"cpu_threads_min": 1, "cpu_threads_pref": 1, "cpu_threads_max": 1, "memory_gb_max": None},
+                task_paths={
+                    str(alias): _expand_map_token(path, map_index=idx, map_key=map_key, map_hash=item_hash)
+                    for alias, path in spec.task_paths.items()
+                },
                 params=spec.params,
             )
             shard_env = {

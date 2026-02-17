@@ -34,9 +34,9 @@ def test_ctrl_c_stops_run_quickly(tmp_path: Path) -> None:
         "\n".join(
             [
                 "CG_TASK = {",
-                "    'inputs': [],",
-                "    'outputs': ['artifacts/sleepy/interface.json'],",
-                "    'interface_output': 'artifacts/sleepy/interface.json',",
+                "    'inputs': {},",
+                "    'outputs': {'interface': 'artifacts/sleepy/interface.json'},",
+                "    'interface_output': 'interface',",
                 "}",
                 "from pathlib import Path",
                 "import json",

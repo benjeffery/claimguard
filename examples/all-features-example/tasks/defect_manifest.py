@@ -4,24 +4,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "artifacts/fit_model/interface.json",
-        "artifacts/prepare_data/interface.json",
-        "inputs/fit_config.json"
-    ],
-    "outputs": [
-        "artifacts/defect_manifest/manifest.json",
-        "artifacts/defect_manifest/interface.json",
-        "artifacts/defect_manifest/summary.md"
-    ],
-    "interface_output": "artifacts/defect_manifest/interface.json",
-    "claim_blocking": False,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"},
-        {"name": "defect_count_positive", "expr": "interface['metrics']['defect_count'] > 0"}
-    ]
-}
+CG_TASK = {'inputs': {'interface_2': 'artifacts/prepare_data/interface.json',
+            'fit_config': 'inputs/fit_config.json',
+            'in_interface': 'artifacts/fit_model/interface.json'},
+ 'outputs': {'manifest': 'artifacts/defect_manifest/manifest.json',
+             'interface': 'artifacts/defect_manifest/interface.json',
+             'summary': 'artifacts/defect_manifest/summary.md'},
+ 'interface_output': 'interface',
+ 'claim_blocking': False,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"},
+           {'name': 'defect_count_positive', 'expr': "interface['metrics']['defect_count'] > 0"}]}
 
 
 def main() -> int:

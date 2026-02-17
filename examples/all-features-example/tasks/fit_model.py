@@ -5,23 +5,15 @@ import json
 import os
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "artifacts/feature_stats/interface.json",
-        "artifacts/bootstrap_model/interface.json",
-        "inputs/fit_config.json"
-    ],
-    "outputs": [
-        "artifacts/fit_model/model.json",
-        "artifacts/fit_model/interface.json",
-        "artifacts/fit_model/summary.md"
-    ],
-    "interface_output": "artifacts/fit_model/interface.json",
-    "claim_blocking": True,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"}
-    ]
-}
+CG_TASK = {'inputs': {'interface_2': 'artifacts/bootstrap_model/interface.json',
+            'fit_config': 'inputs/fit_config.json',
+            'in_interface': 'artifacts/feature_stats/interface.json'},
+ 'outputs': {'model': 'artifacts/fit_model/model.json',
+             'interface': 'artifacts/fit_model/interface.json',
+             'summary': 'artifacts/fit_model/summary.md'},
+ 'interface_output': 'interface',
+ 'claim_blocking': True,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"}]}
 
 
 def _task_params() -> dict[str, float]:

@@ -6,23 +6,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-CG_TASK = {
-    "inputs": [
-        "artifacts/defect_manifest/manifest.json",
-        "artifacts/defect_solve/{map_index}_{map_key}_{map_hash}/interface.json"
-    ],
-    "outputs": [
-        "artifacts/reduce_defects/interface.json",
-        "artifacts/reduce_defects/report.json",
-        "artifacts/reduce_defects/summary.md"
-    ],
-    "interface_output": "artifacts/reduce_defects/interface.json",
-    "claim_blocking": False,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"},
-        {"name": "shard_count_positive", "expr": "interface['metrics']['shard_count'] > 0"}
-    ]
-}
+CG_TASK = {'inputs': {'manifest': 'artifacts/defect_manifest/manifest.json',
+            'in_interface': 'artifacts/defect_solve/{map_index}_{map_key}_{map_hash}/interface.json'},
+ 'outputs': {'interface': 'artifacts/reduce_defects/interface.json',
+             'report': 'artifacts/reduce_defects/report.json',
+             'summary': 'artifacts/reduce_defects/summary.md'},
+ 'interface_output': 'interface',
+ 'claim_blocking': False,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"},
+           {'name': 'shard_count_positive', 'expr': "interface['metrics']['shard_count'] > 0"}]}
 
 
 def _safe_name(task_name: str) -> str:

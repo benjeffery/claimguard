@@ -7,22 +7,14 @@ import csv
 import json
 from pathlib import Path
 
-CG_TASK = {
-    "inputs": [
-        "inputs/raw_measurements.csv",
-        "inputs/fit_config.json",
-    ],
-    "outputs": [
-        "artifacts/prepare_data/payload.json",
-        "artifacts/prepare_data/interface.json",
-    ],
-    "interface_output": "artifacts/prepare_data/interface.json",
-    "claim_blocking": True,
-    "gates": [
-        {"name": "status_ok", "expr": "interface['status'] == 'ok'"},
-        {"name": "row_count_positive", "expr": "interface['metrics']['row_count'] > 0"}
-    ]
-}
+CG_TASK = {'inputs': {'raw_measurements': 'inputs/raw_measurements.csv',
+            'fit_config': 'inputs/fit_config.json'},
+ 'outputs': {'payload': 'artifacts/prepare_data/payload.json',
+             'interface': 'artifacts/prepare_data/interface.json'},
+ 'interface_output': 'interface',
+ 'claim_blocking': True,
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"},
+           {'name': 'row_count_positive', 'expr': "interface['metrics']['row_count'] > 0"}]}
 
 
 def main() -> int:

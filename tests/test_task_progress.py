@@ -164,9 +164,9 @@ def test_runner_emits_task_progress_events(tmp_path: Path) -> None:
         "\n".join(
             [
                 "CG_TASK = {",
-                "    'inputs': [],",
-                "    'outputs': ['artifacts/work/interface.json'],",
-                "    'interface_output': 'artifacts/work/interface.json',",
+                "    'inputs': {},",
+                "    'outputs': {'interface': 'artifacts/work/interface.json'},",
+                "    'interface_output': 'interface',",
                 "}",
                 "from pathlib import Path",
                 "import json",

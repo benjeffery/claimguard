@@ -75,7 +75,57 @@ class TaskSpec:
     allow_rng: bool
     map_config: dict[str, Any] | None
     resources: dict[str, Any]
+    task_paths: dict[str, str]
     params: dict[str, Any]
+
+
+def _normalize_artifact_bindings(task_name: str, field_name: str, raw: Any) -> dict[str, str]:
+    if isinstance(raw, dict):
+        out: dict[str, str] = {}
+        for k, v in raw.items():
+            if not isinstance(k, str) or not k.strip():
+                raise RuntimeError(f"task `{task_name}` has invalid `{field_name}` key")
+            if not isinstance(v, str):
+                raise RuntimeError(f"task `{task_name}` has invalid `{field_name}[{k!r}]`")
+            out[str(k)] = str(v)
+        return out
+    raise RuntimeError(f"task `{task_name}` `{field_name}` must be object(name -> relative path)")
+
+
+def _normalize_task_schema(task_name: str, spec: dict[str, Any]) -> dict[str, Any]:
+    out = dict(spec)
+    if "inputs" not in out or "outputs" not in out:
+        return out
+
+    input_bindings = _normalize_artifact_bindings(task_name, "inputs", out.get("inputs"))
+    output_bindings = _normalize_artifact_bindings(task_name, "outputs", out.get("outputs"))
+    out["inputs"] = list(input_bindings.values())
+    out["outputs"] = list(output_bindings.values())
+
+    task_paths: dict[str, str] = {}
+    for name, path in input_bindings.items():
+        task_paths[str(name)] = str(path)
+    for name, path in output_bindings.items():
+        prev = task_paths.get(str(name))
+        if prev is not None and prev != str(path):
+            raise RuntimeError(f"task `{task_name}` has duplicate artifact binding name with different paths: {name!r}")
+        task_paths[str(name)] = str(path)
+    out["task_paths"] = task_paths
+
+    interface_token = out.get("interface_output")
+    if not isinstance(interface_token, str) or interface_token not in output_bindings:
+        raise RuntimeError(f"task `{task_name}` interface_output must reference an `outputs` key")
+    out["interface_output"] = str(output_bindings[interface_token])
+
+    map_cfg = out.get("map")
+    if isinstance(map_cfg, dict):
+        map_out = dict(map_cfg)
+        items_input = map_out.get("items_input")
+        if not isinstance(items_input, str) or items_input not in input_bindings:
+            raise RuntimeError(f"task `{task_name}` map.items_input must reference an `inputs` key")
+        map_out["items_input"] = str(input_bindings[items_input])
+        out["map"] = map_out
+    return out
 
 
 def _validate_task_dict(task_name: str, spec: dict[str, Any]) -> None:
@@ -97,6 +147,10 @@ def _validate_task_dict(task_name: str, spec: dict[str, Any]) -> None:
         raise RuntimeError(f"task `{task_name}` has invalid `write_exemptions`")
     if not isinstance(spec.get("gates", []), list):
         raise RuntimeError(f"task `{task_name}` has invalid `gates`")
+    if not isinstance(spec.get("task_paths", {}), dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in dict(spec.get("task_paths", {})).items()
+    ):
+        raise RuntimeError(f"task `{task_name}` has invalid `task_paths`")
     if "claim_blocking" in spec and not isinstance(spec.get("claim_blocking"), bool):
         raise RuntimeError(f"task `{task_name}` has invalid `claim_blocking`")
     if "allow_subprocess" in spec and not isinstance(spec.get("allow_subprocess"), bool):
@@ -121,6 +175,19 @@ def _validate_task_dict(task_name: str, spec: dict[str, Any]) -> None:
         _validate_rel_path_token(task_name, "read_exemptions", str(token))
     for token in spec.get("write_exemptions", []):
         _validate_rel_path_token(task_name, "write_exemptions", str(token))
+    for alias, token in dict(spec.get("task_paths", {})).items():
+        _validate_rel_path_token(task_name, f"task_paths[{alias!r}]", str(token))
+
+    declared_artifacts = set(spec["inputs"]) | set(spec["outputs"])
+    declared_artifacts.update(str(x) for x in spec.get("read_exemptions", []))
+    declared_artifacts.update(str(x) for x in spec.get("write_exemptions", []))
+    declared_artifacts.add(str(spec["interface_output"]))
+    for alias, token in dict(spec.get("task_paths", {})).items():
+        if str(token) not in declared_artifacts:
+            raise RuntimeError(
+                f"task `{task_name}` task_paths[{alias!r}] must resolve to a declared "
+                "input/output/interface_output/read_exemption/write_exemption path"
+            )
 
     gates = list(spec.get("gates", []))
     gate_names: set[str] = set()
@@ -227,8 +294,9 @@ def discover_tasks(
             merged_params.update(dict(params_map.get(task_name, {})))
             merged["params"] = merged_params
             merged["script_rel"] = str(script_path.resolve().relative_to(workspace_root.resolve()))
-            _validate_task_dict(task_name, merged)
-            raw_by_name[task_name] = merged
+            expanded = _normalize_task_schema(task_name, merged)
+            _validate_task_dict(task_name, expanded)
+            raw_by_name[task_name] = expanded
 
     unknown_param_tasks = set(params_map).difference(set(raw_by_name))
     if unknown_param_tasks:
@@ -267,6 +335,7 @@ def discover_tasks(
                 "cpu_threads_max": cpu_threads_max,
                 "memory_gb_max": (float(resource_in.get("memory_gb_max")) if "memory_gb_max" in resource_in else None),
             },
+            task_paths={str(k): str(v) for k, v in dict(spec.get("task_paths", {})).items()},
             params=dict(spec.get("params", {})),
         )
     return task_specs

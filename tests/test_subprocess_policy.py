@@ -13,9 +13,9 @@ def _write(path: Path, text: str) -> None:
 
 def _write_task(workspace: Path, *, allow_subprocess: bool) -> None:
     cg_task = {
-        "inputs": ["inputs/in.txt"],
-        "outputs": ["artifacts/out.txt", "artifacts/interface.json"],
-        "interface_output": "artifacts/interface.json",
+        "inputs": {"in": "inputs/in.txt"},
+        "outputs": {"out": "artifacts/out.txt", "interface": "artifacts/interface.json"},
+        "interface_output": "interface",
         "gates": [],
         "allow_subprocess": allow_subprocess,
     }

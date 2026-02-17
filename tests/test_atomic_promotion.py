@@ -22,12 +22,10 @@ def test_gate_failure_does_not_promote_staged_outputs(tmp_path: Path) -> None:
     }
     _write(ws / "claimguard.json", json.dumps(contract, indent=2) + "\n")
 
-    cg_task = {
-        "inputs": ["inputs/mode.txt"],
-        "outputs": ["artifacts/out.txt", "artifacts/interface.json"],
-        "interface_output": "artifacts/interface.json",
-        "gates": [{"name": "status_ok", "expr": "interface['status'] == 'ok'"}],
-    }
+    cg_task = {'inputs': {'mode': 'inputs/mode.txt'},
+ 'outputs': {'out': 'artifacts/out.txt', 'interface': 'artifacts/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"}]}
     _write(
         ws / "tasks/task.py",
         "\n".join(

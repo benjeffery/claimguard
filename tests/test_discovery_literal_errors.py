@@ -26,10 +26,11 @@ def test_non_literal_cg_task_gets_helpful_error(tmp_path: Path) -> None:
         "\n".join(
             [
                 "INPUTS = {'a': 'inputs/in.txt'}",
+                "OUTPUTS = {'interface': 'artifacts/interface.json'}",
                 "CG_TASK = {",
-                "  'inputs': list(INPUTS.values()),",
-                "  'outputs': ['artifacts/interface.json'],",
-                "  'interface_output': 'artifacts/interface.json',",
+                "  'inputs': INPUTS,",
+                "  'outputs': OUTPUTS,",
+                "  'interface_output': 'interface',",
                 "  'gates': [],",
                 "}",
             ]

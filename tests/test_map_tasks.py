@@ -28,18 +28,12 @@ def test_map_task_fanout_and_replay(tmp_path: Path) -> None:
     }
     _write(ws / "claimguard.json", json.dumps(contract, indent=2) + "\n")
 
-    cg_task = {
-        "inputs": ["inputs/items.json"],
-        "outputs": ["artifacts/map/{map_index}_{map_key}_{map_hash}/interface.json"],
-        "interface_output": "artifacts/map/{map_index}_{map_key}_{map_hash}/interface.json",
-        "gates": [{"name": "status_ok", "expr": "interface['status'] == 'ok'"}],
-        "claim_blocking": True,
-        "map": {
-            "items_input": "inputs/items.json",
-            "items_path": "items",
-            "item_name_field": "id",
-        },
-    }
+    cg_task = {'inputs': {'items': 'inputs/items.json'},
+ 'outputs': {'interface': 'artifacts/map/{map_index}_{map_key}_{map_hash}/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"}],
+ 'claim_blocking': True,
+ 'map': {'items_input': 'items', 'items_path': 'items', 'item_name_field': 'id'}}
     _write(
         ws / "tasks/map_worker.py",
         "\n".join(
@@ -117,19 +111,15 @@ def test_map_task_allow_empty_marks_previous_outputs_stale(tmp_path: Path) -> No
     }
     _write(ws / "claimguard.json", json.dumps(contract, indent=2) + "\n")
 
-    cg_task = {
-        "inputs": ["inputs/items.json"],
-        "outputs": ["artifacts/map/{map_index}_{map_key}_{map_hash}/interface.json"],
-        "interface_output": "artifacts/map/{map_index}_{map_key}_{map_hash}/interface.json",
-        "gates": [{"name": "status_ok", "expr": "interface['status'] == 'ok'"}],
-        "claim_blocking": True,
-        "map": {
-            "items_input": "inputs/items.json",
-            "items_path": "items",
-            "item_name_field": "id",
-            "allow_empty": True,
-        },
-    }
+    cg_task = {'inputs': {'items': 'inputs/items.json'},
+ 'outputs': {'interface': 'artifacts/map/{map_index}_{map_key}_{map_hash}/interface.json'},
+ 'interface_output': 'interface',
+ 'gates': [{'name': 'status_ok', 'expr': "interface['status'] == 'ok'"}],
+ 'claim_blocking': True,
+ 'map': {'items_input': 'items',
+         'items_path': 'items',
+         'item_name_field': 'id',
+         'allow_empty': True}}
     _write(
         ws / "tasks/map_worker.py",
         "\n".join(

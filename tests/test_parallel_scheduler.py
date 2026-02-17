@@ -30,11 +30,12 @@ def test_parallel_scheduler_overlaps_independent_tasks(tmp_path: Path) -> None:
 
     def task_script(task_name: str, output_dir: str, sleep_s: float, extra_inputs: list[str] | None = None) -> str:
         ins = ["inputs/in.txt"] + (extra_inputs or [])
-        outs = [f"artifacts/{output_dir}/interface.json"]
+        input_map = {f"in{i + 1}": rel for i, rel in enumerate(ins)}
+        interface_path = f"artifacts/{output_dir}/interface.json"
         spec = {
-            "inputs": ins,
-            "outputs": outs,
-            "interface_output": outs[0],
+            "inputs": input_map,
+            "outputs": {"interface": interface_path},
+            "interface_output": "interface",
             "gates": [],
             "claim_blocking": task_name == "merge",
         }
