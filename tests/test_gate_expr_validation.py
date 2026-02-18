@@ -191,3 +191,94 @@ def test_contract_task_params_must_be_object_map(tmp_path: Path) -> None:
     )
     with pytest.raises(RuntimeError, match="`task_params` must be an object"):
         PipelineRunner(ws / "claimguard.json")
+
+
+def test_disabled_flag_defaults_to_off(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    _write(
+        ws / "claimguard.json",
+        json.dumps({"pipeline_name": "disabled_default_off", "task_roots": ["tasks"]}, indent=2) + "\n",
+    )
+    _write(ws / "inputs/in.txt", "x\n")
+    _write_task(
+        ws,
+        {
+            "inputs": {"in": "inputs/in.txt"},
+            "outputs": {"interface": "artifacts/interface.json"},
+            "interface_output": "interface",
+            "gates": [],
+        },
+        [
+            "root = Path.cwd()",
+            "(root / 'artifacts').mkdir(parents=True, exist_ok=True)",
+            "(root / 'artifacts/interface.json').write_text(json.dumps({'status': 'ok'}), encoding='utf-8')",
+        ],
+    )
+
+    report = PipelineRunner(ws / "claimguard.json").run()
+    row = next(r for r in report["task_rows"] if r["task"] == "task")
+    assert row["status"] == "ok"
+
+
+def test_disabled_true_is_skipped_from_discovery_and_run(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir(parents=True, exist_ok=True)
+    _write(
+        ws / "claimguard.json",
+        json.dumps({"pipeline_name": "disabled_skip", "task_roots": ["tasks"]}, indent=2) + "\n",
+    )
+    _write(ws / "inputs/in.txt", "x\n")
+
+    _write(
+        ws / "tasks/a_disabled.py",
+        "\n".join(
+            [
+                "CG_TASK = {",
+                "  'inputs': {'in': 'inputs/in.txt'},",
+                "  'outputs': {'interface': 'artifacts/a/interface.json'},",
+                "  'interface_output': 'interface',",
+                "  'gates': [],",
+                "  'disabled': True,",
+                "}",
+                "from pathlib import Path",
+                "import json",
+                "def main() -> int:",
+                "    root = Path.cwd()",
+                "    (root / 'artifacts/a').mkdir(parents=True, exist_ok=True)",
+                "    (root / 'artifacts/a/interface.json').write_text(json.dumps({'status': 'ok'}), encoding='utf-8')",
+                "    return 0",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+            ]
+        )
+        + "\n",
+    )
+    _write(
+        ws / "tasks/b_enabled.py",
+        "\n".join(
+            [
+                "CG_TASK = {",
+                "  'inputs': {'in': 'inputs/in.txt'},",
+                "  'outputs': {'interface': 'artifacts/b/interface.json'},",
+                "  'interface_output': 'interface',",
+                "  'gates': [],",
+                "}",
+                "from pathlib import Path",
+                "import json",
+                "def main() -> int:",
+                "    root = Path.cwd()",
+                "    (root / 'artifacts/b').mkdir(parents=True, exist_ok=True)",
+                "    (root / 'artifacts/b/interface.json').write_text(json.dumps({'status': 'ok'}), encoding='utf-8')",
+                "    return 0",
+                "if __name__ == '__main__':",
+                "    raise SystemExit(main())",
+            ]
+        )
+        + "\n",
+    )
+
+    runner = PipelineRunner(ws / "claimguard.json")
+    assert sorted(runner.task_specs.keys()) == ["b_enabled"]
+    report = runner.run()
+    assert sorted(str(row["task"]) for row in report["task_rows"]) == ["b_enabled"]

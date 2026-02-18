@@ -157,6 +157,8 @@ def _validate_task_dict(task_name: str, spec: dict[str, Any]) -> None:
         raise RuntimeError(f"task `{task_name}` has invalid `allow_subprocess`")
     if "allow_rng" in spec and not isinstance(spec.get("allow_rng"), bool):
         raise RuntimeError(f"task `{task_name}` has invalid `allow_rng`")
+    if "disabled" in spec and not isinstance(spec.get("disabled"), bool):
+        raise RuntimeError(f"task `{task_name}` has invalid `disabled`")
     if "params" in spec and not isinstance(spec.get("params"), dict):
         raise RuntimeError(f"task `{task_name}` has invalid `params`")
     if "resources" in spec and not isinstance(spec.get("resources"), dict):
@@ -278,6 +280,7 @@ def discover_tasks(
             raise RuntimeError(f"task_params[{k!r}] must be an object")
 
     raw_by_name: dict[str, dict[str, Any]] = {}
+    discovered_names: set[str] = set()
     for root_rel in task_roots:
         root = (workspace_root / root_rel).resolve()
         if not root.exists() or not root.is_dir():
@@ -287,8 +290,9 @@ def discover_tasks(
             if cg_task is None:
                 continue
             task_name = ".".join(script_path.relative_to(root).with_suffix("").parts)
-            if task_name in raw_by_name:
+            if task_name in discovered_names:
                 raise RuntimeError(f"duplicate discovered task name: {task_name}")
+            discovered_names.add(task_name)
             merged = dict(cg_task)
             merged_params = dict(merged.get("params", {}))
             merged_params.update(dict(params_map.get(task_name, {})))
@@ -296,9 +300,11 @@ def discover_tasks(
             merged["script_rel"] = str(script_path.resolve().relative_to(workspace_root.resolve()))
             expanded = _normalize_task_schema(task_name, merged)
             _validate_task_dict(task_name, expanded)
+            if bool(expanded.get("disabled", False)):
+                continue
             raw_by_name[task_name] = expanded
 
-    unknown_param_tasks = set(params_map).difference(set(raw_by_name))
+    unknown_param_tasks = set(params_map).difference(discovered_names)
     if unknown_param_tasks:
         raise RuntimeError(f"task_params references unknown tasks: {sorted(unknown_param_tasks)}")
 
