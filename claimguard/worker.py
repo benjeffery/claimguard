@@ -291,20 +291,6 @@ def _configure_cpu_budget() -> None:
     ):
         os.environ[key] = str(threads)
 
-    raw_affinity = str(os.environ.get("CG_CPU_AFFINITY", "")).strip()
-    if not raw_affinity:
-        return
-    try:
-        cpu_ids = {int(tok) for tok in raw_affinity.split(",") if tok.strip()}
-    except Exception:
-        return
-    if not cpu_ids:
-        return
-    try:
-        os.sched_setaffinity(0, cpu_ids)
-    except Exception:
-        return
-
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="claimguard-worker")

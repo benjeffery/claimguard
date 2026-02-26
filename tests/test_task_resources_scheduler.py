@@ -60,7 +60,6 @@ def _make_task(
                 "        'mkl': os.environ.get('MKL_NUM_THREADS', ''),",
                 "        'numexpr': os.environ.get('NUMEXPR_NUM_THREADS', ''),",
                 "        'goto': os.environ.get('GOTO_NUM_THREADS', ''),",
-                "        'affinity_env': os.environ.get('CG_CPU_AFFINITY', ''),",
                 "    }",
                 f"    (out / {output_rel.rsplit('/', 1)[1]!r}).write_text(json.dumps(payload), encoding='utf-8')",
                 "    return 0",
@@ -155,7 +154,6 @@ def test_scheduler_exports_thread_budget_env_vars(tmp_path: Path) -> None:
         assert payload["mkl"] == "1"
         assert payload["numexpr"] == "1"
         assert payload["goto"] == "1"
-        assert len([x for x in str(payload["affinity_env"]).split(",") if x.strip()]) == 1
 
 
 def test_scheduler_uses_critical_path_priority(tmp_path: Path) -> None:

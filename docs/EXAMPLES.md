@@ -207,4 +207,4 @@ Worker env exported per task:
 
 - `CG_CPU_THREADS`
 - `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `GOTO_NUM_THREADS`
-- `CG_CPU_AFFINITY` (comma-separated CPU IDs)
+
